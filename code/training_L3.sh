@@ -23,7 +23,7 @@ for l in "${l_arr[@]}"; do
     for alpha_D in "${alpha_D_arr[@]}"; do
       for N in "${N_arr[@]}"; do
         # Build the command to run the python script with parameters
-        cmd="python3 train_gd_3_init_overlap.py --N $N --alpha_P $alpha_P --alpha_D $alpha_D --l $l --device cpu --data_PATH $data_PATH"
+        cmd="python3 training.py --N $N --alpha_P $alpha_P --alpha_D $alpha_D --l $l --device cpu --data_PATH $data_PATH"
 
         # Wait for a free slot to run the process
         wait_for_free_slot
