@@ -3,7 +3,7 @@ import os
 import numpy as np
 import random
 import math
-import timewwww
+import time
 import copy
 import argparse
 import torch
@@ -129,7 +129,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                     input_vectors = model.normalize_x(input_vectors)
                     if (epoch == epochs-1):
                         n = 100
-
             if counter_f !=0:
                 vali_loss_f = vali_loss_f/(counter_f)
 
@@ -148,7 +147,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                     if (epoch == epochs-1):
                         n = 100
 
-
             if counter_gen != 0:
                 vali_loss_gen = vali_loss_gen / counter_gen
 
@@ -166,7 +164,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                     save_model(vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
                 else:
                     to_save = np.array([vali_loss,vali_loss_f,vali_loss_gen])
-
             # Compute model parameters for logging
             J = model.J.squeeze().cpu().detach().numpy()
             norm_J = np.linalg.norm(J)
