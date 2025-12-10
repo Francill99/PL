@@ -22,8 +22,11 @@ def compute_asymmetry(J: np.ndarray) -> float:
     # Ensure that J is a NumPy array
     J = np.array(J)
 
-    # Step 1: Compute the difference between J and its transpose
-    asymmetry_matrix = J - J.T
+    if J.ndim == 2:
+        # Caso standard: matrice NxN
+        asymmetry_matrix = J - J.T
+    else:
+        asymmetry_matrix = J - J.transpose(1,0,2,3)
 
     # Step 2: Square each element in the asymmetry matrix
     squared_diff_matrix = np.square(asymmetry_matrix)
@@ -73,7 +76,6 @@ def start_overlap(
     for x in range(X):
         if spin_type == "vector":
             if d == 1:
-                # ------------------- binary (±1) case: keep old behaviour ------------------- #
                 # Number of rows to flip in order to obtain the desired overlap:
                 # m_new = 1 - 2 K / N  =>  K/N = (1 - m_new) / 2
                 num_rows_to_flip = int(N * ((1.0 - init_overlap) / 2.0))
@@ -84,7 +86,6 @@ def start_overlap(
                 init_vectors[x, indices_to_flip, :] *= -1
 
             else:
-                # ------------------- vector case, d > 1: random on sphere ------------------- #
                 # Here random new vectors are independent of the old ones, so their expected
                 # local overlap is 0. To get global overlap m, we keep a fraction m unchanged
                 # and replace a fraction (1 - m) by new random unit vectors.
@@ -120,30 +121,70 @@ def start_overlap(
 
     return init_vectors
 
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
 
-def basins_of_attraction_xi(
+
+def basins_of_attraction_inp_vectors(
     init_overlaps_array,
     model,
     dataset,
     num_of_run,
     n,
     device,
-    spin_type: str = "vector",
-    gamma: float = None,
+    batch_size=None,
 ):
-    max_overlap_xi_list = []
-    final_overlap_xi_list = []
+    """
+    For each init_overlap in init_overlaps_array and for each independent run
+    (num_of_run), do:
 
-    max_overlap_xi_array = np.array(max_overlap_xi_list)
-    final_overlap_xi_array = np.array(final_overlap_xi_list)
-    return max_overlap_xi_array, final_overlap_xi_array
+      - build initial configurations via start_overlap at that overlap
+        relative to the dataset patterns,
+      - run the dynamics for n steps,
+      - compute per-sample max overlap over time and final overlap.
 
-def basins_of_attraction_inp_vectors(input_data, init_overlaps_array, model, n):
-    max_overlap_inp_vectors_list = []
+    Parallelization over the dataset is always done via a DataLoader.
 
-    # Convert the list to a NumPy array
-    max_overlap_inp_vectors_array = np.array(max_overlap_inp_vectors_list)
-    return max_overlap_inp_vectors_array
+    Returns
+    -------
+    max_overlap_xi_array  : np.ndarray
+        Shape [len(init_overlaps_array), num_of_run, num_samples]
+    final_overlap_xi_array: np.ndarray
+        Shape [len(init_overlaps_array), num_of_run, num_samples]
+    """
+    model.eval()
+
+    # Infer spin_type / gamma from model if available
+    spin_type = getattr(model, "spin_type", "vector")
+    gamma = getattr(model, "gamma", None)
+
+    num_samples = len(dataset)
+
+    # If batch_size is None, use all samples in one batch
+    if batch_size is None:
+        batch_size = num_samples
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+    )
+
+    max_overlap_xi_array = np.zeros((len(init_overlaps_array),num_of_run))
+    final_overlap_xi_array = np.zeros((len(init_overlaps_array),num_of_run))
+
+    with torch.no_grad():
+        # Loop over different initial overlaps
+        for i_o, init_overlap in enumerate(init_overlaps_array):
+            # For each independent run, regenerate random initial data
+            for run_idx in range(num_of_run):
+                ov_final, ov_max = compute_validation_overlap(model, dataloader, device, init_overlap, n)
+                final_overlap_xi_array[i_o,run_idx] = ov_final
+                max_overlap_xi_array[i_o,run_idx] = ov_max
+
+    return final_overlap_xi_array, max_overlap_xi_array
 
 def compute_validation_overlap(model, dataloader, device, init_overlap, n):
     model.eval()  # Set model to evaluation mode
@@ -162,7 +203,7 @@ def compute_validation_overlap(model, dataloader, device, init_overlap, n):
             overlaps = torch.zeros((inp_data.shape[0], n))
 
             for i_n in range(n):
-                x_new = model.dyn_step(x_new, n)
+                x_new = model.dyn_step(x_new)
                 overlaps[:,i_n] = overlap(x_new, inp_data)
 
             final_overlaps = overlaps[:, -1]
@@ -178,8 +219,6 @@ def compute_validation_overlap(model, dataloader, device, init_overlap, n):
         max_vloss = max_vloss / counter
 
     return vali_loss, max_vloss
-
-import torch
 
 def overlap(x: torch.Tensor,
             y: torch.Tensor,
@@ -222,11 +261,8 @@ def overlap(x: torch.Tensor,
     y_flat = y.reshape(*y.shape[:-2], -1)
 
     if spin_type == "vector":
-        # ----------------------------------------------------------
-        # VECTOR CASE (binary spins d=1, or unit vectors on sphere)
         # Overlap = global cosine similarity, clipped to [0,1]
         # For binary ±1 spins, this is (1/N) sum_i s_i t_i.
-        # ----------------------------------------------------------
         num = (x_flat * y_flat).sum(dim=-1)
         x_norm = torch.sqrt((x_flat ** 2).sum(dim=-1) + eps)
         y_norm = torch.sqrt((y_flat ** 2).sum(dim=-1) + eps)
@@ -237,12 +273,9 @@ def overlap(x: torch.Tensor,
         return ov
 
     elif spin_type == "continuous":
-        # ----------------------------------------------------------
-        # CONTINUOUS CASE
         # Overlap = Pearson correlation across all coordinates:
         #   rho = Cov(X, Y) / (sigma_X * sigma_Y)
         # then clipped to [0,1].
-        # ----------------------------------------------------------
         x_mean = x_flat.mean(dim=-1, keepdim=True)
         y_mean = y_flat.mean(dim=-1, keepdim=True)
 

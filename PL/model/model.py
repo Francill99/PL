@@ -355,18 +355,76 @@ class TwoBodiesModel(nn.Module):
             loss = loss + l2_term
 
         return loss
+    
+    def _bessel_Iv_series(self, x, v: float, n_terms: int = 20):
+        """
+        Compute modified Bessel function I_v(x) via its power series:
+
+            I_v(x) = sum_{k=0}^∞ (1 / (k! Γ(k+v+1))) (x/2)^{2k+v}
+
+        We truncate the sum at n_terms. Implemented with pure torch ops,
+        so it's differentiable by autograd.
+
+        Args:
+            x: tensor (any shape)
+            v: float, order of Bessel
+            n_terms: number of series terms
+
+        Returns:
+            Tensor with same shape as x.
+        """
+        # Work in float64 for numerical stability
+        orig_dtype = x.dtype
+        x64 = x.to(torch.float64)
+
+        # Avoid log(0) issues
+        eps = 1e-12
+        x_clamped = torch.clamp(x64, min=eps)
+
+        # k = 0, 1, ..., n_terms-1, with broadcasting over x
+        # Shape: [n_terms, 1, 1, ..., 1] to broadcast with x
+        k = torch.arange(n_terms, device=x64.device, dtype=x64.dtype)
+        k_shape = (n_terms,) + (1,) * x64.ndim
+        k = k.view(k_shape)
+
+        v_tensor = torch.tensor(v, dtype=x64.dtype, device=x64.device)
+
+        # log((x/2)^(2k+v)) = (2k+v) * log(x/2)
+        log_x_over_2 = torch.log(x_clamped / 2.0)
+        log_x_power = (2.0 * k + v_tensor) * log_x_over_2
+
+        # log(1 / (k! Γ(k+v+1))) = -[log(k!) + log Γ(k+v+1)]
+        log_factorial_k = torch.lgamma(k + 1.0)           # log(k!)
+        log_gamma_kv = torch.lgamma(k + v_tensor + 1.0)   # log Γ(k+v+1)
+        log_coeff = -(log_factorial_k + log_gamma_kv)
+
+        # log term_k = log_coeff + log_x_power
+        log_terms = log_coeff + log_x_power
+
+        terms = torch.exp(log_terms)   # [n_terms, *x.shape]
+        Iv = terms.sum(dim=0)          # sum over k
+
+        # Fix the value at x=0 using known limits:
+        # I_v(0) = 0 for v>0; I_0(0) = 1
+        if v > 0:
+            Iv = torch.where(x64 == 0, torch.zeros_like(Iv), Iv)
+        elif abs(v) < 1e-12:
+            Iv = torch.where(x64 == 0, torch.ones_like(Iv), Iv)
+
+        return Iv.to(orig_dtype)
+
 
     def _K_d(self, x, d=None):
         """
         Compute K_d(x) = (2π)^{d/2} I_{d/2 - 1}(x) / x^{d/2 - 1}
-        in a fully differentiable way (PyTorch autograd compatible).
+        using a custom torch implementation of I_v(x).
 
         Args:
-            x: Tensor of any shape, argument of K_d (usually x = λ r ||u|| ≥ 0)
+            x: Tensor, argument of K_d (usually x = λ r ||u|| ≥ 0)
             d: Optional int; if None, use self.d
 
         Returns:
-            Tensor of same shape as x with K_d(x).
+            Tensor with same shape as x with K_d(x).
         """
         if d is None:
             d = self.d
@@ -374,8 +432,8 @@ class TwoBodiesModel(nn.Module):
         # order of the modified Bessel function
         nu = d / 2.0 - 1.0
 
-        # modified Bessel I_{ν}(x), available in torch.special
-        Iv = torch.special.iv(nu, x)
+        # Compute I_nu(x) via power series (autograd-friendly)
+        Iv = self._bessel_Iv_series(x, v=nu, n_terms=20)
 
         # avoid division by zero at x ~ 0
         eps = 1e-12
@@ -386,4 +444,5 @@ class TwoBodiesModel(nn.Module):
 
         K = prefactor * Iv / (x_clamped ** power)
         return K
+
 
