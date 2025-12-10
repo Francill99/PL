@@ -41,7 +41,7 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = CustomDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
     if D>0:
@@ -50,15 +50,17 @@ def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda
     # Initialize the model
     model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)
     model.to(device)  # Move the model to the specified device
+        # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     # Apply the Hebb rule
     if init_Hebb:
         model.Hebb(dataset.xi.to(device), 'Tensorial')
 
     # Return the dataset and model
-    return dataset, model
+    return dataset, model, optimizer
 
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
+def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
@@ -69,7 +71,10 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
-    init_training_h5(h5_path, model)
+
+
+    # IMPORTANT: change init_training_h5 to also store optimizer (see below)
+    init_training_h5(h5_path, model, optimizer)
     next_save_idx = 1  # 0 is untrained
 
     # Training loop
@@ -84,26 +89,32 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             counter += 1
             inp_data = batch_element.to(device)
 
-            # Compute loss
-            loss = model(inp_data, lambd=l)
+            # Compute loss (now via compute_crossentropy)
+            loss = model.compute_crossentropy(inp_data, lambd=l)
 
             # Check for valid loss values (no NaN or Inf)
-            if (torch.isnan(loss).any() == False) and (torch.isinf(loss).any() == False):
-                model.zero_grad()
-                with torch.no_grad():
-                    # Backward and gradient descent
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad)
-                    for param in model.parameters():
-                        param.data -= learning_rate * param.grad
-                    train_loss += loss.item()
+            if torch.isfinite(loss):
+                optimizer.zero_grad()
+                loss.backward()
+
+                # gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad)
+
+                # optimizer step
+                optimizer.step()
+
+                train_loss += loss.item()
             else:
-                print("Detected nan " + model_name_base + " epoch{} lr{}".format(epoch, learning_rate))
-                model.J.data *= 0.1
+                print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
+                with torch.no_grad():
+                    model.J.data *= 0.1
                 learning_rate *= 0.1
+                # update optimizer LR as well
+                for pg in optimizer.param_groups:
+                    pg["lr"] = learning_rate
 
         # Average training loss
-        train_loss = train_loss / counter
+        train_loss = train_loss / max(counter, 1)
         model.eval()
 
         # Validation and model saving
@@ -157,6 +168,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                 next_save_idx = save_training(
                     h5_path=h5_path,
                     model=model,
+                    optimizer=optimizer,
                     epoch=epoch,
                     history=history,
                     save_idx=next_save_idx,
@@ -215,22 +227,22 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         next_save_idx = save_training(
             h5_path=h5_path,
             model=model,
+            optimizer=optimizer,
             epoch=epoch,
             history=history,
             save_idx=next_save_idx,
         )
 
-
 def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, valid_every, max_grad, P_generalization):
     P = int(alpha_P * N)
     D = int(alpha_D * N)
     print("P={}, D={}, L={}, lambda={}".format(P, D, L, l))
-    model_name_base = "GD_capacity_N_{}_P_{}_D{}_l_{}_epochs{}_lr{}_spin{}".format(N, P, D, l, epochs, learning_rate, spin_type)
+    model_name_base = "{}_capacity_N_{}_P_{}_D{}_l_{}_epochs{}_lr{}_spin{}".format(spin_type, N, P, D, l, epochs, learning_rate, spin_type)
 
     torch.cuda.empty_cache()
     gc.collect()
 
-    dataset, model = initialize(N, P, D, d, spin_type, l, device, L)
+    dataset, model, optimizer = initialize(N, P, D, d, learning_rate, spin_type, l, device, L)
     if D>0:
         dataset_f = DatasetF(D, dataset.f)
         xi_generalization = dataset.get_generalization(P_generalization)
@@ -257,15 +269,13 @@ def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_
     epochs_to_save = [1000]
     save = False
 
-    fake_opt = torch.optim.SGD(model.parameters(), lr=learning_rate)
-
     print("epochs:{} lr:{} max_norm:{} init_overlap:{} n:{} l:{}".format(epochs, learning_rate, max_grad, init_overlap, n, l))
 
     # Train the model
     train_model(
         model, dataloader, dataloader_f,dataloader_generalization, epochs, 
         learning_rate, max_grad, device, data_PATH, init_overlap, 
-        n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save,
+        n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save,
     )
 
 if __name__ == "__main__":

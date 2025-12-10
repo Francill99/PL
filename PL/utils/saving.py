@@ -19,7 +19,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-import os
+import io
 import numpy as np
 import h5py
 import torch
@@ -39,29 +39,42 @@ METRIC_NAMES = [
 ]
 
 
-def init_training_h5(h5_path, model):
+def init_training_h5(h5_path, model, optimizer=None):
     """
-    Create the .h5 file at the beginning of training and save the *untrained* model as save 0.
+    Initialize the HDF5 file for training:
+
+    - Overwrites any existing file at h5_path.
+    - Creates an 'untrained' checkpoint with index 0:
+        * model_0        : state_dict of the untrained model
+        * optimizer_0    : (optional) state_dict of the optimizer at epoch 0
+        * metric datasets: empty arrays for each METRIC_NAMES key
     """
-    os.makedirs(os.path.dirname(h5_path), exist_ok=True)
+    # Ensure we start from a clean file
+    if os.path.exists(h5_path):
+        os.remove(h5_path)
 
-    with h5py.File(h5_path, "w") as f:
-        # untrained model = model_0
-        g = f.create_group("model_0")
-        g.attrs["epoch"] = 0
+    # Empty history for all metrics
+    history = {name: [] for name in METRIC_NAMES}
 
-        state_dict = model.state_dict()
-        for name, tensor in state_dict.items():
-            f.create_dataset(name, data=tensor.detach().cpu().numpy())
+    # This will create the file and write model_0 / optimizer_0 / empty metrics
+    save_training(
+        h5_path=h5_path,
+        model=model,
+        optimizer=optimizer,
+        epoch=0,
+        history=history,
+        save_idx=0,
+    )
 
-        f.attrs["num_saves"] = 1  # currently only the untrained model
 
 
-def save_training(h5_path, model, epoch, history, save_idx):
+
+def save_training(h5_path, model, optimizer, epoch, history, save_idx):
     """
     Save current state:
     - overwrite metric datasets (epoch, norm_J, train_loss, ...) with the *full* history lists
     - save model in a new group model_{save_idx} with its epoch.
+    - save optimizer state in optimizer_{save_idx} as serialized bytes.
     Returns the next save index (save_idx + 1).
     """
     with h5py.File(h5_path, "a") as f:
@@ -72,7 +85,9 @@ def save_training(h5_path, model, epoch, history, save_idx):
                 del f[key]
             f.create_dataset(key, data=arr)
 
+        # -------------------
         # model snapshot
+        # -------------------
         group_name = f"model_{save_idx}"
         if group_name in f:
             del f[group_name]
@@ -83,19 +98,45 @@ def save_training(h5_path, model, epoch, history, save_idx):
         for name, tensor in state_dict.items():
             g.create_dataset(name, data=tensor.detach().cpu().numpy())
 
+        # -------------------
+        # optimizer snapshot
+        # -------------------
+        opt_group_name = f"optimizer_{save_idx}"
+        if opt_group_name in f:
+            del f[opt_group_name]
+        g_opt = f.create_group(opt_group_name)
+        g_opt.attrs["epoch"] = int(epoch)
+
+        # serialize optimizer.state_dict() to bytes
+        opt_state_dict = optimizer.state_dict()
+        buffer = io.BytesIO()
+        torch.save(opt_state_dict, buffer)
+        byte_data = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
+
+        g_opt.create_dataset("state", data=byte_data)
+
         f.attrs["num_saves"] = int(save_idx + 1)
 
     return save_idx + 1
 
-
-def load_training(h5_path, save_idx, model, device=None):
+def load_training(h5_path, save_idx, model, optimizer=None, device=None):
     """
-    Load model (into the given model instance) and metrics from a given save index.
+    Load model (into the given model instance), optimizer (optional)
+    and metrics from a given save index.
 
     save_idx = 0 -> untrained model, 1 -> first saved checkpoint, etc.
 
+    Args:
+        h5_path : path to .h5 file
+        save_idx: which checkpoint index to load
+        model   : model instance whose state_dict will be overwritten
+        optimizer: (optional) optimizer instance; if given and a state is
+                   found, its state_dict will be loaded.
+        device  : device to map tensors to (defaults to model device)
+
     Returns:
         model        : the same instance with loaded weights
+        optimizer    : the same optimizer instance (or None), possibly with loaded state
         metrics      : dict of numpy arrays for each METRIC_NAMES key
         epoch_saved  : epoch stored for that checkpoint
     """
@@ -103,7 +144,28 @@ def load_training(h5_path, save_idx, model, device=None):
         device = next(model.parameters()).device
 
     with h5py.File(h5_path, "r") as f:
+        if save_idx == -1:
+            if "num_saves" in f.attrs:
+                num_saves = int(f.attrs["num_saves"])
+                if num_saves <= 0:
+                    raise ValueError(f"No saves found in {h5_path}")
+                save_idx = num_saves - 1
+            else:
+                # Fallback: infer from groups model_*
+                indices = []
+                for key in f.keys():
+                    if key.startswith("model_"):
+                        try:
+                            idx = int(key.split("_")[1])
+                            indices.append(idx)
+                        except ValueError:
+                            pass
+                if not indices:
+                    raise ValueError(f"No model_* groups found in {h5_path}")
+                save_idx = max(indices)
+
         group_name = f"model_{save_idx}"
+        
         if group_name not in f:
             raise ValueError(f"Save index {save_idx} not found in {h5_path}")
 
@@ -119,6 +181,20 @@ def load_training(h5_path, save_idx, model, device=None):
 
         model.load_state_dict(state_dict)
 
+        # -------------------
+        # optimizer state (optional)
+        # -------------------
+        opt_group_name = f"optimizer_{save_idx}"
+        if optimizer is not None and opt_group_name in f:
+            g_opt = f[opt_group_name]
+            byte_data = np.array(g_opt["state"], dtype=np.uint8)
+            buffer = io.BytesIO(byte_data.tobytes())
+            opt_state_dict = torch.load(buffer, map_location=device)
+            optimizer.load_state_dict(opt_state_dict)
+
+        # -------------------
+        # metrics history
+        # -------------------
         metrics = {}
         for key in METRIC_NAMES:
             if key in f:
@@ -126,4 +202,4 @@ def load_training(h5_path, save_idx, model, device=None):
             else:
                 metrics[key] = None
 
-    return model, metrics, epoch_saved
+    return model, optimizer, metrics, epoch_saved
