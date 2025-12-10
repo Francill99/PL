@@ -8,6 +8,7 @@ import copy
 import argparse
 import torch
 import gc
+import h5py
 
 ## PyTorch
 import torch
@@ -18,14 +19,26 @@ import torch.optim as optim
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from PL_library.model.model import TwoBodiesModel
-from PL_library.dataset.dataset import CustomDataset, DatasetF
-from PL_library.utils.saving import Save_Model, SaveBestModel
-from PL_library.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
+from PL.model.model import TwoBodiesModel
+from PL.dataset.dataset import CustomDataset, DatasetF
+from PL.utils.saving import init_training_h5, save_training, load_training
+from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
 
-
-device = torch.device("cpu")
-print("Device:", device)
+METRIC_NAMES = [
+    "epoch",
+    "norm_J",
+    "train_loss",
+    "learning_rate",
+    "vali_loss",
+    "vali_loss_f",
+    "vali_loss_gen",
+    "vali_loss_max",
+    "vali_loss_f_max",
+    "vali_loss_gen_max",
+    "x_norm",
+    "asymmetry",
+    "diff_hebb"
+]
 
 
 def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
@@ -45,28 +58,19 @@ def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda
     # Return the dataset and model
     return dataset, model
 
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH,
-                model_name, init_overlap, n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
-    # Initial setup
-    norm_0 = torch.tensor(1)
-    norm = torch.tensor(1)
-    save_model_epoch = np.empty(len(epochs_to_save), dtype=object)
+def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
 
-    # Initialize SaveModel class
-    save_model = Save_Model(data_PATH + model_name, print=False)
-    for i_e, e in enumerate(epochs_to_save):
-        save_model_epoch[i_e] = Save_Model(data_PATH+model_name_base+"ep{}.pth".format(e), print=False)
-    aa = 0
-    # Initialize histories
-    hist_loss = []
-    hist_vloss = []
-    hist_asymm = []
-    hist_diff = []
-    hist_J_norm = []
+    # New: metric history for saving to h5
+    history = {name: [] for name in METRIC_NAMES}
 
     print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
     t_in = time.time()
+
+    # ---- HDF5 file + untrained model (save 0) ----
+    h5_path = os.path.join(data_PATH, model_name_base + ".h5")
+    init_training_h5(h5_path, model)
+    next_save_idx = 1  # 0 is untrained
 
     # Training loop
     for epoch in range(epochs):
@@ -94,110 +98,135 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                         param.data -= learning_rate * param.grad
                     train_loss += loss.item()
             else:
-                print("Detected nan "+ model_name_base+" epoch{} lr{}".format(epoch, learning_rate))
+                print("Detected nan " + model_name_base + " epoch{} lr{}".format(epoch, learning_rate))
                 model.J.data *= 0.1
                 learning_rate *= 0.1
 
         # Average training loss
         train_loss = train_loss / counter
-        hist_loss.append(train_loss)
         model.eval()
 
         # Validation and model saving
         if epoch % valid_every == 0 and epoch > 0:
-            vali_loss, vali_loss_max = compute_validation_overlap(model=model, dataloader=dataloader, device=device,  
-                                            init_overlap=init_overlap, n=n,
+            vali_loss, vali_loss_max = compute_validation_overlap(
+                model=model, dataloader=dataloader, device=device,
+                init_overlap=init_overlap, n=n,
             )
-            vali_loss_f, vali_loss_f_max = compute_validation_overlap(model=model, dataloader=dataloader_f, device=device,  
-                                            init_overlap=init_overlap, n=n,
+            vali_loss_f, vali_loss_f_max = compute_validation_overlap(
+                model=model, dataloader=dataloader_f, device=device,
+                init_overlap=init_overlap, n=n,
             )
-            vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(model=model, dataloader=dataloader_gen, device=device,  
-                                            init_overlap=init_overlap, n=n,
+            vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(
+                model=model, dataloader=dataloader_gen, device=device,
+                init_overlap=init_overlap, n=n,
             )
 
-            elapsed_time = time.time() - t0
-            time_from_in = time.time() - t_in
-
+            # dynamics to compute x_norm (using last batch's inp_data)
             x_new = inp_data.clone()
             for i_n in range(n):
                 x_new = model.dyn_step(x_new)
+            x_norm = torch.norm(x_new).cpu().item()
 
-            x_norm = torch.norm(x_new).cpu().numpy()
-
-            #Save checkpoints
-            if (epoch in epochs_to_save) and save==True:
-                save_model_epoch[aa](vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
-                aa +=1
-
-            # Save last model
-            if (epoch == epochs-1):
-                if save==True:
-                    save_model(vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
-                else:
-                    to_save = np.array([vali_loss,vali_loss_f,vali_loss_gen])
             # Compute model parameters for logging
             J = model.J.squeeze().cpu().detach().numpy()
             norm_J = torch.norm(model.J, dim=1).mean().item()
             asymmetry = compute_asymmetry(J)
             diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
-            print(epoch, norm_J, train_loss, learning_rate, vali_loss, vali_loss_f, vali_loss_gen, vali_loss_max, vali_loss_f_max, vali_loss_gen_max, x_norm)
+            print(epoch, norm_J, train_loss, learning_rate,
+                  vali_loss, vali_loss_f, vali_loss_gen,
+                  vali_loss_max, vali_loss_f_max, vali_loss_gen_max, x_norm)
 
-            # Append to history
-            hist_asymm.append(asymmetry)
-            hist_diff.append(diff_Hebb)
-            hist_J_norm.append(norm_J)
+            # Append to history used for h5 saving
+            history["epoch"].append(epoch)
+            history["norm_J"].append(norm_J)
+            history["train_loss"].append(train_loss)
+            history["learning_rate"].append(learning_rate)
+            history["vali_loss"].append(vali_loss)
+            history["vali_loss_f"].append(vali_loss_f)
+            history["vali_loss_gen"].append(vali_loss_gen)
+            history["vali_loss_max"].append(vali_loss_max)
+            history["vali_loss_f_max"].append(vali_loss_f_max)
+            history["vali_loss_gen_max"].append(vali_loss_gen_max)
+            history["x_norm"].append(x_norm)
+            history["asymmetry"].append(asymmetry)
+            history["diff_hebb"].append(diff_Hebb)
+
+            # Save checkpoints with h5py
+            if (epoch in epochs_to_save) and save is True:
+                next_save_idx = save_training(
+                    h5_path=h5_path,
+                    model=model,
+                    epoch=epoch,
+                    history=history,
+                    save_idx=next_save_idx,
+                )
+
     #############################################
-            
+
+    # Final evaluation after training
     model.eval()
-    vali_loss = 0.0
-    counter = 0
-    vali_loss = compute_validation_overlap(model=model, dataloader=dataloader, device=device,  
-                                    init_overlap=init_overlap, n=n,
+    vali_loss, vali_loss_max = compute_validation_overlap(
+        model=model, dataloader=dataloader, device=device,
+        init_overlap=init_overlap, n=n,
     )
-    vali_loss_f = compute_validation_overlap(model=model, dataloader=dataloader_f, device=device,  
-                                    init_overlap=init_overlap, n=n,
+    vali_loss_f, vali_loss_f_max = compute_validation_overlap(
+        model=model, dataloader=dataloader_f, device=device,
+        init_overlap=init_overlap, n=n,
     )
-    vali_loss_gen = compute_validation_overlap(model=model, dataloader=dataloader_gen, device=device,  
-                                    init_overlap=init_overlap, n=n,
+    vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(
+        model=model, dataloader=dataloader_gen, device=device,
+        init_overlap=init_overlap, n=n,
     )
-    elapsed_time = time.time() - t0
-    time_from_in = time.time() - t_in
-    #Save checkpoints
-    if (epoch in epochs_to_save) and save==True:
-        save_model_epoch[aa](vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
-        aa +=1
-    # Save last model
-    if (epoch == epochs-1):
-        if save==True:
-            save_model(vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
-        else:
-            to_save = np.array([vali_loss,vali_loss_f,vali_loss_gen])
-            #np.save(data_PATH + model_name_base+"overlaps",to_save)
-            print(to_save)
-            J = model.J.squeeze().cpu().detach().numpy()
-            asymmetry = compute_asymmetry(J)
-            print(asymmetry)
+
+
+    # compute x_norm again for this final evaluation (first batch)
+    with torch.no_grad():
+        for batch_element in dataloader:
+            inp_data = batch_element.to(device)
+            x_new = inp_data.clone()
+            for i_n in range(n):
+                x_new = model.dyn_step(x_new)
+            x_norm = torch.norm(x_new).cpu().item()
+            break
+
     # Compute model parameters for logging
     J = model.J.squeeze().cpu().detach().numpy()
-    norm_J = np.linalg.norm(J)
+    norm_J = torch.norm(model.J, dim=1).mean().item()
     asymmetry = compute_asymmetry(J)
-    diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / (norm_J+1e-9)
-    # Append to history
-    hist_asymm.append(asymmetry)
-    hist_diff.append(diff_Hebb)
-    hist_J_norm.append(norm_J)
+    diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / (norm_J + 1e-9)
 
-    # Return training history for further analysis
-    return hist_loss, hist_vloss, hist_asymm, hist_diff, hist_J_norm
+    # Also append to h5 metric history
+    history["epoch"].append(epoch)  # epoch is still last loop value
+    history["norm_J"].append(norm_J)
+    history["train_loss"].append(train_loss)
+    history["learning_rate"].append(learning_rate)
+    history["vali_loss"].append(vali_loss)
+    history["vali_loss_f"].append(vali_loss_f)
+    history["vali_loss_gen"].append(vali_loss_gen)
+    history["vali_loss_max"].append(vali_loss_max)
+    history["vali_loss_f_max"].append(vali_loss_f_max)
+    history["vali_loss_gen_max"].append(vali_loss_gen_max)
+    history["x_norm"].append(x_norm)
+    history["asymmetry"].append(asymmetry)
+    history["diff_hebb"].append(diff_Hebb)
+
+    if save is True:
+        # final SAVE HERE with h5py
+        next_save_idx = save_training(
+            h5_path=h5_path,
+            model=model,
+            epoch=epoch,
+            history=history,
+            save_idx=next_save_idx,
+        )
+
 
 def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, valid_every, max_grad, P_generalization):
     P = int(alpha_P * N)
     D = int(alpha_D * N)
     print("P={}, D={}, L={}, lambda={}".format(P, D, L, l))
-    model_name_base = "GD_capacity_N_{}_P_{}_D{}_l_{}_epochs{}_lr{}".format(N, P, D, l, epochs, learning_rate)
-    
-    model_name = "GD_capacity_N_{}_P_{}_D{}_l_{}_epochs{}_lr{}.pth".format(N, P, D, l, epochs, learning_rate)
+    model_name_base = "GD_capacity_N_{}_P_{}_D{}_l_{}_epochs{}_lr{}_spin{}".format(N, P, D, l, epochs, learning_rate, spin_type)
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -234,9 +263,9 @@ def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_
     print("epochs:{} lr:{} max_norm:{} init_overlap:{} n:{} l:{}".format(epochs, learning_rate, max_grad, init_overlap, n, l))
 
     # Train the model
-    hist_loss, hist_vloss, hist_asymm, hist_diff, hist_J_norm = train_model(
+    train_model(
         model, dataloader, dataloader_f,dataloader_generalization, epochs, 
-        learning_rate, max_grad, device, data_PATH, model_name, init_overlap, 
+        learning_rate, max_grad, device, data_PATH, init_overlap, 
         n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save,
     )
 
