@@ -179,7 +179,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         init_overlap=init_overlap, n=n,
     )
 
-
     # compute x_norm again for this final evaluation (first batch)
     with torch.no_grad():
         for batch_element in dataloader:
