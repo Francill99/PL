@@ -136,21 +136,21 @@ class TwoBodiesModel(nn.Module):
             print("To define normalization for d>1")
         return Z_i_mu
 
-    def forward(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def compute_crossentropy(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
         Dispatch to the appropriate forward depending on spin_type and d.
         """
         if self.spin_type == "vector":
             if self.d == 1:
-                return self._forward_vector_d1(xi_batch, lambd, alpha, i_rand, r, l2)
+                return self._crossentropy_vector_d1(xi_batch, lambd, alpha, i_rand, r, l2)
             else:
-                return self._forward_vector_ddim(xi_batch, lambd, alpha, i_rand, r, l2)
+                return self._crossentropy_vector_ddim(xi_batch, lambd, alpha, i_rand, r, l2)
         elif self.spin_type == "continuous":
-            return self._forward_continuous(xi_batch, lambd, alpha, i_rand, r, l2)
+            return self._crossentropy_continuous(xi_batch, lambd, alpha, i_rand, r, l2)
         else:
             raise ValueError(f"Unknown spin_type: {self.spin_type}")
 
-    def _forward_vector_d1(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def _crossentropy_vector_d1(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
         Pseudolikelihood for binary spins (d=1).
         Keeps the same logic as the original forward().
@@ -198,7 +198,7 @@ class TwoBodiesModel(nn.Module):
             else:
                 return -x_J_x.mean() + alpha * (self.J.data**2).mean()
 
-    def _forward_vector_ddim(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def _crossentropy_vector_ddim(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
         Pseudolikelihood for vector spins with fixed norm (d > 1).
 
@@ -285,7 +285,7 @@ class TwoBodiesModel(nn.Module):
             l2_term = (self.J ** 2).mean()
             return energy_i_mu.mean() + l2_term
 
-    def _forward_continuous(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def _crossentropy_continuous(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
         Pseudolikelihood for continuous variables with Gaussian regularization.
 
