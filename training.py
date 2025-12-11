@@ -31,7 +31,7 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, spin_type="vector", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = RandomFeaturesDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
     if D>0:
@@ -50,10 +50,22 @@ def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, devi
     # Return the dataset and model
     return dataset, model, optimizer
 
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
+def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH,
+                model_name, init_overlap, n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
+    # Initial setup
+    save_model_epoch = np.empty(len(epochs_to_save), dtype=object)
 
-    # New: metric history for saving to h5
-    history = {name: [] for name in METRIC_NAMES}
+    # Initialize SaveModel class
+    save_model = Save_Model(data_PATH + model_name, print=False)
+    for i_e, e in enumerate(epochs_to_save):
+        save_model_epoch[i_e] = Save_Model(data_PATH+model_name_base+"ep{}.pth".format(e), print=False)
+    aa = 0
+    # Initialize histories
+    hist_loss = []
+    hist_vloss = []
+    hist_asymm = []
+    hist_diff = []
+    hist_J_norm = []
 
     print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
@@ -180,17 +192,22 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         model=model, dataloader=dataloader_gen, device=device,
         init_overlap=init_overlap, n=n,
     )
-
-    # compute x_norm again for this final evaluation (first batch)
-    with torch.no_grad():
-        for batch_element in dataloader:
-            inp_data = batch_element.to(device)
-            x_new = inp_data.clone()
-            for i_n in range(n):
-                x_new = model.dyn_step(x_new)
-            x_norm = torch.norm(x_new).cpu().item()
-            break
-
+    time_from_in = time.time() - t_in
+    #Save checkpoints
+    if (epoch in epochs_to_save) and save==True:
+        save_model_epoch[aa](vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
+        aa +=1
+    # Save last model
+    if (epoch == epochs-1):
+        if save==True:
+            save_model(vali_loss, epoch, model, fake_opt, hist_vloss, time_from_in)
+        else:
+            to_save = np.array([vali_loss,vali_loss_f,vali_loss_gen])
+            #np.save(data_PATH + model_name_base+"overlaps",to_save)
+            print(to_save)
+            J = model.J.squeeze().cpu().detach().numpy()
+            asymmetry = compute_asymmetry(J)
+            print(asymmetry)
     # Compute model parameters for logging
     J = model.J.squeeze().cpu().detach().numpy()
     norm_J = torch.norm(model.J, dim=1).mean().item()
@@ -275,9 +292,9 @@ if __name__ == "__main__":
     parser.add_argument("--N", type=int, required=True)
     parser.add_argument("--alpha_P", type=float, required=True)
     parser.add_argument("--alpha_D", type=float, required=True)
-    parser.add_argument("--l", type=float, required=True)
+    parser.add_argument("--l", type=float, required=True)   # the inverse temperature lambda
     parser.add_argument("--d", type=int, default=1)
-    parser.add_argument("--on_sphere", type=bool, default=True)
+    parser.add_argument("--spin_type", type=str, default="vector")
     parser.add_argument("--init_overlap", type=float, default=1.0)
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu")
@@ -292,4 +309,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Run the main function with the parsed arguments
-    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.on_sphere, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
+    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.spin_type, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
