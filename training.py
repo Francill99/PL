@@ -18,7 +18,7 @@ device = torch.device("cpu")
 print("Device:", device)
 
 
-def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, spin_type="vector", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = CustomDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
     if D>0:
@@ -38,8 +38,6 @@ def initialize(N=1000, P=400, D=0, d=1, spin_type="vectorial", l=1, device='cuda
 def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH,
                 model_name, init_overlap, n, l, fake_opt, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
     # Initial setup
-    norm_0 = torch.tensor(1)
-    norm = torch.tensor(1)
     save_model_epoch = np.empty(len(epochs_to_save), dtype=object)
 
     # Initialize SaveModel class
@@ -151,7 +149,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
     vali_loss_gen = compute_validation_overlap(model=model, dataloader=dataloader_gen, device=device,  
                                     init_overlap=init_overlap, n=n,
     )
-    elapsed_time = time.time() - t0
     time_from_in = time.time() - t_in
     #Save checkpoints
     if (epoch in epochs_to_save) and save==True:
@@ -237,9 +234,9 @@ if __name__ == "__main__":
     parser.add_argument("--N", type=int, required=True)
     parser.add_argument("--alpha_P", type=float, required=True)
     parser.add_argument("--alpha_D", type=float, required=True)
-    parser.add_argument("--l", type=float, required=True)
+    parser.add_argument("--l", type=float, required=True)   # the inverse temperature lambda
     parser.add_argument("--d", type=int, default=1)
-    parser.add_argument("--on_sphere", type=bool, default=True)
+    parser.add_argument("--spin_type", type=str, default="vector")
     parser.add_argument("--init_overlap", type=float, default=1.0)
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu")
@@ -254,4 +251,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Run the main function with the parsed arguments
-    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.on_sphere, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
+    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.spin_type, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
