@@ -20,7 +20,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 from PL.model.model import TwoBodiesModel
-from PL.dataset.dataset import CustomDataset, DatasetF
+from PL.dataset.dataset import RandomFeaturesDataset, GeneralDataset
 from PL.utils.saving import init_training_h5, save_training, load_training
 from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
 
@@ -43,7 +43,7 @@ METRIC_NAMES = [
 
 def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
-    dataset = CustomDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
+    dataset = RandomFeaturesDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
     if D>0:
         dataset.RF(seed=444)
 
@@ -244,9 +244,9 @@ def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_
 
     dataset, model, optimizer = initialize(N, P, D, d, learning_rate, spin_type, l, device, L)
     if D>0:
-        dataset_f = DatasetF(D, dataset.f)
+        dataset_f = GeneralDataset(D, dataset.f)
         xi_generalization = dataset.get_generalization(P_generalization)
-        dataset_generalization = DatasetF(P_generalization, xi_generalization)
+        dataset_generalization = GeneralDataset(P_generalization, xi_generalization)
         batch_size = P
         batch_size_f = D
     else:
