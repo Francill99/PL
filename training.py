@@ -1,27 +1,17 @@
 ## Standard libraries
-import os
 import numpy as np
-import random
-import math
 import time
-import copy
 import argparse
 import torch
 import gc
 
 ## PyTorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data as data
-import torch.optim as optim
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 
-from PL_library.model.model import TwoBodiesModel
-from PL_library.dataset.dataset import CustomDataset, DatasetF
-from PL_library.utils.saving import Save_Model, SaveBestModel
-from PL_library.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
+from PL.model.model import TwoBodiesModel
+from PL.dataset.dataset import CustomDataset, DatasetF
+from PL.utils.saving import Save_Model
+from PL.utils.functions import compute_asymmetry, compute_validation_overlap
 
 
 device = torch.device("cpu")
