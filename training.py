@@ -1,10 +1,6 @@
 ## Standard libraries
-import os
 import numpy as np
-import random
-import math
 import time
-import copy
 import argparse
 import torch
 import gc
@@ -12,17 +8,11 @@ import h5py
 
 ## PyTorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data as data
-import torch.optim as optim
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 
 from PL.model.model import TwoBodiesModel
-from PL.dataset.dataset import RandomFeaturesDataset, GeneralDataset
-from PL.utils.saving import init_training_h5, save_training, load_training
-from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
+from PL.dataset.dataset import CustomDataset, DatasetF
+from PL.utils.saving import Save_Model
+from PL.utils.functions import compute_asymmetry, compute_validation_overlap
 
 METRIC_NAMES = [
     "epoch",
