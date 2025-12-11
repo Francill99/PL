@@ -19,7 +19,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 
-class CustomDataset(Dataset):
+class RandomFeaturesDataset(Dataset):
     def __init__(
         self,
         P, N, D, d,
@@ -153,14 +153,14 @@ class CustomDataset(Dataset):
         # Return the pattern xi at the given index
         return self.xi[index]
 
-class DatasetF(Dataset):
+class GeneralDataset(Dataset):
     def __init__(self, D, f):
         self.D = D
-        self.f = f
+        self.f = data
 
     def __len__(self):
         return self.D
 
     def __getitem__(self, index):
-        return self.f[index]
+        return self.data[index]
 
