@@ -1,7 +1,6 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class TwoBodiesModel(nn.Module):
     def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector"):

@@ -11,7 +11,7 @@
             "program": "./training.py",
             "console": "integratedTerminal",
             "args": [
-                "--N", "128",
+                "--N", "32",
                 "--alpha_P", "1",
                 "--alpha_D", "0",
                 "--l", "1"
