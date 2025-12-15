@@ -73,7 +73,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     # Training loop
     for epoch in range(epochs):
-        t0 = time.time()
         model.train()
         train_loss = 0.0
         counter = 0
