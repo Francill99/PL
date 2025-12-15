@@ -1,8 +1,6 @@
 import math
 import torch
-import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
 
 class TwoBodiesModel(nn.Module):
     def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector"):
@@ -46,7 +44,6 @@ class TwoBodiesModel(nn.Module):
     def Hebb(self, xi, form):
         P = xi.shape[0]  # Number of patterns
         N = self.N
-        d = self.d
 
         if form not in ["Isotropic", "Tensorial"]:
             raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")

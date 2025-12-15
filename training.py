@@ -8,21 +8,14 @@ import copy
 import argparse
 import torch
 import gc
-import h5py
 
 ## PyTorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data as data
-import torch.optim as optim
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 
 from PL.model.model import TwoBodiesModel
 from PL.dataset.dataset import RandomFeaturesDataset, GeneralDataset
-from PL.utils.saving import init_training_h5, save_training, load_training
-from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
+from PL.utils.saving import init_training_h5, save_training
+from PL.utils.functions import compute_asymmetry, compute_validation_overlap
 
 METRIC_NAMES = [
     "epoch",
@@ -41,7 +34,7 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = RandomFeaturesDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
     if D>0:
@@ -60,6 +53,8 @@ def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vectorial", l=1, devi
     # Return the dataset and model
     return dataset, model, optimizer
 
+
+
 def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
 
     # New: metric history for saving to h5
@@ -67,7 +62,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
-    t_in = time.time()
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
@@ -79,7 +73,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     # Training loop
     for epoch in range(epochs):
-        t0 = time.time()
         model.train()
         train_loss = 0.0
         counter = 0
@@ -134,7 +127,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
             # dynamics to compute x_norm (using last batch's inp_data)
             x_new = inp_data.clone()
-            for i_n in range(n):
+            for _ in range(n):
                 x_new = model.dyn_step(x_new)
             x_norm = torch.norm(x_new).cpu().item()
 
@@ -242,7 +235,7 @@ def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_
     torch.cuda.empty_cache()
     gc.collect()
 
-    dataset, model, optimizer = initialize(N, P, D, d, learning_rate, spin_type, l, device, L)
+    dataset, model, optimizer = initialize(N, P, D, d, learning_rate, spin_type, device, L)
     if D>0:
         dataset_f = GeneralDataset(D, dataset.f)
         xi_generalization = dataset.get_generalization(P_generalization)
@@ -285,9 +278,9 @@ if __name__ == "__main__":
     parser.add_argument("--N", type=int, required=True)
     parser.add_argument("--alpha_P", type=float, required=True)
     parser.add_argument("--alpha_D", type=float, required=True)
-    parser.add_argument("--l", type=float, required=True)
+    parser.add_argument("--l", type=float, required=True)  # lambda: inverse temperature
     parser.add_argument("--d", type=int, default=1)
-    parser.add_argument("--on_sphere", type=bool, default=True)
+    parser.add_argument("--spin_type", type=str, default="vector")
     parser.add_argument("--init_overlap", type=float, default=1.0)
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu")
@@ -302,4 +295,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Run the main function with the parsed arguments
-    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.on_sphere, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
+    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.spin_type, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
