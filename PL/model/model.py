@@ -4,6 +4,8 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
+from PL.utils.k_d import LogKd
+
 class TwoBodiesModel(nn.Module):
     def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector"):
         """
@@ -19,7 +21,7 @@ class TwoBodiesModel(nn.Module):
         self.device = device
         self.spin_type = spin_type  # NEW
 
-        self.J = nn.Parameter(torch.randn(N, N, d, d))
+        self.J = nn.Parameter(torch.randn(N, N, d, d)/math.sqrt(N*d))
         diagonal = self.J.data.diagonal(dim1=0, dim2=1)  # Get diagonal elements
         diagonal.fill_(0)
         #self.normalize_J()
@@ -248,10 +250,9 @@ class TwoBodiesModel(nn.Module):
 
             # Dot product 
             y_dot_u = torch.einsum('ma,ma->m', y_i_mu, J_x)                 # [M]
-
-            x_arg = lambd * r * u_norm                                  # [M]
-            K_vals = self._K_d(x_arg)                                   # [M]
-            energy_i_mu = -y_dot_u + (1.0 / lambd) * torch.log(K_vals + 1e-9)
+            x_arg = lambd * r * u_norm                                # [M]
+            normalization = LogKd.apply(x_arg, self.d, True)
+            energy_i_mu = -y_dot_u + normalization
 
             if not l2:
                 return energy_i_mu.mean()
@@ -264,9 +265,9 @@ class TwoBodiesModel(nn.Module):
             u_norm = J_x.norm(dim=-1)                                # [M, N]
             y_i_mu = xi_batch                                        # [M, N, d]
             y_dot_u = torch.einsum('mia,mia->mi', y_i_mu, J_x)       # [M, N]
-            x_arg = lambd * r * u_norm
-            K_vals = self._K_d(x_arg)                                   # [M]
-            energy_i_mu = -y_dot_u + (1.0 / lambd) * torch.log(K_vals + 1e-9)
+            x_arg = lambd * r * u_norm                                # [M]
+            normalization = LogKd.apply(x_arg, self.d,True)
+            energy_i_mu = -y_dot_u + normalization
             # Average over sites i, then over patterns mu
             energy_i_mu = energy_i_mu.mean(dim=1)                    # [M]
             if not l2:

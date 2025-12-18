@@ -143,7 +143,7 @@ class RandomFeaturesDataset(Dataset):
     def normalize(self, x):
         # Normalize each d-dimensional vector in x along the last dimension
         norms = x.norm(dim=-1, keepdim=True)+1e-9
-        return x / norms
+        return  x / norms
 
     def __len__(self):
         # Return the number of patterns P
