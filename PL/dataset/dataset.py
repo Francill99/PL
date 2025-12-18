@@ -22,13 +22,13 @@ class BasicDataset(Dataset):
         """
         P: Number of patterns
         N: Number of sites
-        D: Number of random features
         d: Dimensionality of each site
         sigma: Std of Gaussian noise
         spin_type: "vector" (O(d) spins on unit sphere) or "continuous"
                    (unconstrained real spins). Binary Ising is the
                    special case spin_type="vector", d=1.
         coefficients: "binary" or "gaussian" (for c), independent of spin type.
+        xi: Optional pre-defined patterns (P x N x d tensor)
         """
         self.P = P
         self.N = N
@@ -92,6 +92,7 @@ class RandomFeaturesDataset(BasicDataset):
                    (unconstrained real spins). Binary Ising is the
                    special case spin_type="vector", d=1.
         coefficients: "binary" or "gaussian" (for c), independent of spin type.
+        xi: Optional pre-defined patterns (P x N x d tensor)
         """
         super().__init__(P, N, d, sigma=sigma, seed=seed, spin_type=spin_type, coefficients=coefficients)
         self.D = D
