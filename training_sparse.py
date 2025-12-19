@@ -37,7 +37,7 @@ def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vect
     dataset_gen = BasicDataset(P_generalization, N, d, spin_type=spin_type, coefficients=coefficients, xi=data_test)
 
     # Initialize the model
-    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)
+    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type, device=device)
     model.to(device)  # Move the model to the specified device
         # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
@@ -255,7 +255,7 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
     batch_size_gen = P_generalization
 
 
-    model2 = TwoBodiesModel(N, d, spin_type=spin_type)
+    model2 = TwoBodiesModel(N, d, spin_type=spin_type, device=device)
     model2.to(device)
     model2.Hebb(dataset.xi, 'Tensorial')  # Applying the Hebb rule
     J2 = model2.J.squeeze().cpu().detach().numpy()

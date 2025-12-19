@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 class TwoBodiesModel(nn.Module):
-    def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector"):
+    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector"):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
