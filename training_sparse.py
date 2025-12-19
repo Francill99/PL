@@ -1,10 +1,6 @@
 ## Standard libraries
 import os
 import numpy as np
-import random
-import math
-import time
-import copy
 import argparse
 import torch
 import gc
@@ -13,7 +9,7 @@ import gc
 import torch
 
 from PL.model.model import TwoBodiesModel
-from PL.dataset.dataset import BasicDataset, GeneralDataset
+from PL.dataset.dataset import BasicDataset
 from PL.utils.saving import init_training_h5, save_training
 from PL.utils.functions import compute_asymmetry, compute_validation_overlap
 
@@ -228,11 +224,13 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         )
 
 
-def load_data(data_file, P, N, d):
+def load_data(data_file, P, N, d, skip=3):
     if data_file is not None:
         print("Loading data from file:", data_file)
         data_tensor = torch.zeros(P, N, d)
         with open(data_file, 'r') as f:
+            for _ in range(skip):
+                next(f)  # Skip header lines
             for i, line in enumerate(f):
                 if i >= P:
                     break

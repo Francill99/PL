@@ -24,13 +24,12 @@
             "program": "./training_sparse.py",
             "console": "integratedTerminal",
             "args": [
-                "--N", "32",
-                "--alpha_P", "1",
+                "--N", "1024",
+                "--alpha_P", "0.05",
                 "--l", "1",
                 "--epochs", "20",
                 "--valid_every", "2",
-                // "--data_file", "./data/sparse_data_N32_P32_d3.pt",
-                // "--save", 
+                "--data_file", "./data/temperature_0.99.txt",
                 "--epochs_to_save", "4", "8", "12", "16", "20",
                 "--save"
             ]
