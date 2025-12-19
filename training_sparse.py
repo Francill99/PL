@@ -30,10 +30,11 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector", device='cuda', gamma=0., 
-               init_Hebb=True, data=None, coefficients="binary"):
+def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vector", device='cuda', gamma=0., 
+               init_Hebb=True, data_train=None, data_test=None, coefficients="binary"):
     # Initialize the dataset
-    dataset = BasicDataset(P, N, d, seed=444, spin_type=spin_type, coefficients=coefficients, xi=data)
+    dataset = BasicDataset(P, N, d, spin_type=spin_type, coefficients=coefficients, xi=data_train)
+    dataset_gen = BasicDataset(P_generalization, N, d, spin_type=spin_type, coefficients=coefficients, xi=data_test)
 
     # Initialize the model
     model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)
@@ -46,18 +47,18 @@ def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector", device='cuda', ga
         model.Hebb(dataset.xi.to(device), 'Tensorial')
 
     # Return the dataset and model
-    return dataset, model, optimizer
+    return dataset, dataset_gen, model, optimizer
 
 
 
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, 
+def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_grad, 
                 device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, 
-                epochs_to_save, model_name_base, save):
+                save_every, model_name_base, save):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
 
-    print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
+    print("# epoch lambda train_loss learning_rate train_overlap generalization_overlap // // // norm_x")
 
 
     # ---- HDF5 file + untrained model (save 0) ----
@@ -113,10 +114,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                 model=model, dataloader=dataloader, device=device,
                 init_overlap=init_overlap, n=n,
             )
-            vali_loss_f, vali_loss_f_max = compute_validation_overlap(
-                model=model, dataloader=dataloader_f, device=device,
-                init_overlap=init_overlap, n=n,
-            )
             vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(
                 model=model, dataloader=dataloader_gen, device=device,
                 init_overlap=init_overlap, n=n,
@@ -135,8 +132,8 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
             print(epoch, norm_J, train_loss, learning_rate,
-                  vali_loss, vali_loss_f, vali_loss_gen,
-                  vali_loss_max, vali_loss_f_max, vali_loss_gen_max, x_norm)
+                  vali_loss, vali_loss_gen,
+                  vali_loss_max, vali_loss_gen_max, x_norm)
 
             # Append to history used for h5 saving
             history["epoch"].append(epoch)
@@ -144,17 +141,15 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             history["train_loss"].append(train_loss)
             history["learning_rate"].append(learning_rate)
             history["vali_loss"].append(vali_loss)
-            history["vali_loss_f"].append(vali_loss_f)
             history["vali_loss_gen"].append(vali_loss_gen)
             history["vali_loss_max"].append(vali_loss_max)
-            history["vali_loss_f_max"].append(vali_loss_f_max)
             history["vali_loss_gen_max"].append(vali_loss_gen_max)
             history["x_norm"].append(x_norm)
             history["asymmetry"].append(asymmetry)
             history["diff_hebb"].append(diff_Hebb)
 
             # Save checkpoints with h5py
-            if (epoch in epochs_to_save) and save is True:
+            if epoch % save_every == 0 and save is True:
                 next_save_idx = save_training(
                     h5_path=h5_path,
                     model=model,
@@ -170,10 +165,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
     model.eval()
     vali_loss, vali_loss_max = compute_validation_overlap(
         model=model, dataloader=dataloader, device=device,
-        init_overlap=init_overlap, n=n,
-    )
-    vali_loss_f, vali_loss_f_max = compute_validation_overlap(
-        model=model, dataloader=dataloader_f, device=device,
         init_overlap=init_overlap, n=n,
     )
     vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(
@@ -203,10 +194,8 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
     history["train_loss"].append(train_loss)
     history["learning_rate"].append(learning_rate)
     history["vali_loss"].append(vali_loss)
-    history["vali_loss_f"].append(vali_loss_f)
     history["vali_loss_gen"].append(vali_loss_gen)
     history["vali_loss_max"].append(vali_loss_max)
-    history["vali_loss_f_max"].append(vali_loss_f_max)
     history["vali_loss_gen_max"].append(vali_loss_gen_max)
     history["x_norm"].append(x_norm)
     history["asymmetry"].append(asymmetry)
@@ -231,37 +220,39 @@ def load_data(data_file, P, N, d, skip=3):
         with open(data_file, 'r') as f:
             for _ in range(skip):
                 next(f)  # Skip header lines
-            for i, line in enumerate(f):
-                if i >= P:
-                    break
+            all_lines = f.readlines()
+            if len(all_lines) < P:
+                raise ValueError(f"Data file contains only {len(all_lines)} patterns, but P={P} was requested.")
+            random_indices = np.random.choice(len(all_lines), P, replace=False)
+            for i in range(P):
+                line = all_lines[random_indices[i]]
                 values = list(map(float, line.strip().split()))
                 if len(values) != N * d:
                     raise ValueError(f"Line {i+1} in data file does not have the correct number of values.")
                 data_tensor[i] = torch.tensor(values).view(N, d)
-            if i + 1 < P:
-                raise ValueError(f"Data file contains only {i+1} patterns, but P={P} was requested.")
         return data_tensor
     else:
         return None
 
 
 def main(N, alpha_P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
-         max_grad, valid_every, P_generalization, epochs_to_save=[], data_file=None, save=False):
+         max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False):
     P = int(alpha_P * N)
-    data = load_data(data_file, P, N, d)
+    if P_generalization is None:
+        P_generalization = P
+    data_train = load_data(data_file, P, N, d)
+    data_test = load_data(data_file, P_generalization, N, d)
     print("N={}, P={}, lambda={}, d={}".format(N, P, l, d))
     model_name_base = "{}_capacity_N_{}_P_{}_l_{}_d_{}_epochs_{}_lr_{}_spin_{}".format(spin_type, N, P, l, d, epochs, learning_rate, spin_type)
 
     torch.cuda.empty_cache()
     gc.collect()
 
-    dataset, model, optimizer = initialize(N=N, P=P, d=d, lr=learning_rate, spin_type=spin_type, 
-                                           device=device, data=data)
+    dataset, dataset_gen, model, optimizer = initialize(N=N, P=P, P_generalization=P_generalization, d=d, lr=learning_rate, spin_type=spin_type, 
+                                           device=device, data_train=data_train, data_test=data_test)
     
-    dataset_f = dataset
-    dataset_generalization = dataset
     batch_size = P
-    batch_size_f = P
+    batch_size_gen = P_generalization
 
 
     model2 = TwoBodiesModel(N, d, spin_type=spin_type)
@@ -271,17 +262,16 @@ def main(N, alpha_P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs
     norm_J2 = np.linalg.norm(J2)
 
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=2)
-    dataloader_f = torch.utils.data.DataLoader(dataset_f, batch_size=batch_size_f, shuffle=False, drop_last=False, num_workers=2)
-    dataloader_generalization = torch.utils.data.DataLoader(dataset_generalization, batch_size=P_generalization, shuffle=False, drop_last=False, num_workers=2)
+    dataloader_gen = torch.utils.data.DataLoader(dataset_gen, batch_size=batch_size_gen, shuffle=False, drop_last=False, num_workers=2)
     
 
     print("epochs:{} lr:{} max_norm:{} init_overlap:{} n:{} l:{}".format(epochs, learning_rate, max_grad, init_overlap, n, l))
 
     # Train the model
     train_model(
-        model, dataloader, dataloader_f,dataloader_generalization, epochs, 
+        model, dataloader, dataloader_gen, epochs, 
         learning_rate, max_grad, device, data_PATH, init_overlap, 
-        n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save,
+        n, l, optimizer, J2, norm_J2, valid_every, save_every, model_name_base, save,
     )
 
 
@@ -302,11 +292,11 @@ def parse_arguments():
     parser.add_argument("--learning_rate", type=float, default=10., help="Initial learning rate")
     parser.add_argument("--max_grad", type=float, default=20., help="Maximum gradient norm for clipping")
     parser.add_argument("--valid_every", type=int, default=10, help="Frequency of validation during training")
-    parser.add_argument("--P_generalization", type=int, default=1000, help="Batch size for generalization dataset")
+    parser.add_argument("--P_generalization", type=int, default=None, help="Batch size for generalization dataset")
     parser.add_argument("--save", action='store_true', help="Whether to save the training progress") 
-    parser.add_argument("--epochs_to_save", type=int, nargs='*', default=[], help="Epochs at which to save the model during training")
+    parser.add_argument("--save_every", type=int, default=10, help="Frequency at which to save the model during training")
     parser.add_argument("--data_file", type=str, default=None, help="Path to data file for predefined patterns")
-    
+    parser.add_argument("--seed", type=int, default=444, help="Seed for random number generators")
 
     return parser.parse_args()
 
@@ -315,8 +305,11 @@ def parse_arguments():
 if __name__ == "__main__":
     args = parse_arguments()
 
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     # Run the main function with the parsed arguments
     main(args.N, args.alpha_P, args.l, args.d, args.spin_type, args.init_overlap, args.n, 
          args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, 
-         args.valid_every, args.P_generalization, epochs_to_save=args.epochs_to_save, 
+         args.valid_every, args.P_generalization, save_every=args.save_every, 
          data_file=args.data_file, save=args.save)

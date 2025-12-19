@@ -30,8 +30,9 @@
                 "--epochs", "20",
                 "--valid_every", "2",
                 "--data_file", "./data/temperature_0.99.txt",
-                "--epochs_to_save", "4", "8", "12", "16", "20",
-                "--save"
+                "--save_every", "4",
+                "--save", 
+                "--seed", "42"
             ]
         }
     ]
