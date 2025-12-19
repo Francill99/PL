@@ -235,21 +235,21 @@ def load_data(data_file, P, N, d, skip=3):
         return None
 
 
-def main(N, alpha_P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
-         max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False):
-    P = int(alpha_P * N)
+def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
+         max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False,
+         seed=42):
     if P_generalization is None:
         P_generalization = P
     data_train = load_data(data_file, P, N, d)
     data_test = load_data(data_file, P_generalization, N, d)
     print("N={}, P={}, lambda={}, d={}".format(N, P, l, d))
-    model_name_base = "{}_capacity_N_{}_P_{}_l_{}_d_{}_epochs_{}_lr_{}_spin_{}".format(spin_type, N, P, l, d, epochs, learning_rate, spin_type)
+    model_name_base = "PseudoLikelihood_N_{}_P_{}_seed_{}_l_{}_d_{}_epochs_{}_lr_{}_spin_{}".format(N, P, seed, l, d, epochs, learning_rate, spin_type)
 
     torch.cuda.empty_cache()
     gc.collect()
 
     dataset, dataset_gen, model, optimizer = initialize(N=N, P=P, P_generalization=P_generalization, d=d, lr=learning_rate, spin_type=spin_type, 
-                                           device=device, data_train=data_train, data_test=data_test)
+                                                        device=device, data_train=data_train, data_test=data_test)
     
     batch_size = P
     batch_size_gen = P_generalization
@@ -280,7 +280,7 @@ def parse_arguments():
 
     # Define all the parameters
     parser.add_argument("--N", type=int, required=True, help="Number of sites")
-    parser.add_argument("--alpha_P", type=float, required=True, help="Load alpha_P * N patterns")
+    parser.add_argument("--P", type=int, required=True, help="Number of patterns")
     parser.add_argument("--l", type=float, required=True, help="lambda: inverse temperature")
     parser.add_argument("--d", type=int, default=1, help="Dimensionality of each site")
     parser.add_argument("--spin_type", type=str, default="vector", help="Type of spins: 'vector' or 'continuous'")
@@ -311,7 +311,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
 
     # Run the main function with the parsed arguments
-    main(args.N, args.alpha_P, args.l, args.d, args.spin_type, args.init_overlap, args.n, 
+    main(args.N, args.P, args.l, args.d, args.spin_type, args.init_overlap, args.n, 
          args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, 
          args.valid_every, args.P_generalization, save_every=args.save_every, 
-         data_file=args.data_file, save=args.save)
+         data_file=args.data_file, save=args.save, seed=args.seed)
