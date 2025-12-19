@@ -303,6 +303,8 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
+    print("GPU available:", torch.cuda.is_available())
+
     args = parse_arguments()
 
     np.random.seed(args.seed)
