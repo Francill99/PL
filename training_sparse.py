@@ -53,7 +53,7 @@ def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vect
 
 def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_grad, 
                 device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, 
-                save_every, model_name_base, save):
+                save_every, model_name_base, save, extra_steps=0):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
@@ -165,19 +165,20 @@ def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_gr
     model.eval()
     vali_loss, vali_loss_max = compute_validation_overlap(
         model=model, dataloader=dataloader, device=device,
-        init_overlap=init_overlap, n=n,
+        init_overlap=init_overlap, n=extra_steps,
     )
     vali_loss_gen, vali_loss_gen_max = compute_validation_overlap(
         model=model, dataloader=dataloader_gen, device=device,
-        init_overlap=init_overlap, n=n,
+        init_overlap=init_overlap, n=extra_steps,
     )
 
+    
     # compute x_norm again for this final evaluation (first batch)
     with torch.no_grad():
         for batch_element in dataloader:
             inp_data = batch_element.to(device)
             x_new = inp_data.clone()
-            for _ in range(n):
+            for _ in range(extra_steps):
                 x_new = model.dyn_step(x_new)
             x_norm = torch.norm(x_new).cpu().item()
             break
@@ -201,6 +202,12 @@ def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_gr
     history["asymmetry"].append(asymmetry)
     history["diff_hebb"].append(diff_Hebb)
 
+    
+    print(epoch, norm_J, train_loss, learning_rate,
+          vali_loss, vali_loss_gen,
+          vali_loss_max, vali_loss_gen_max, x_norm)
+
+    
     if save is True:
         # final SAVE HERE with h5py
         next_save_idx = save_training(
@@ -237,7 +244,7 @@ def load_data(data_file, P, N, d, skip=3):
 
 def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
          max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False,
-         seed=42):
+         seed=42, extra_steps=0):
     if P_generalization is None:
         P_generalization = P
     data_train = load_data(data_file, P, N, d)
@@ -271,7 +278,8 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
     train_model(
         model, dataloader, dataloader_gen, epochs, 
         learning_rate, max_grad, device, data_PATH, init_overlap, 
-        n, l, optimizer, J2, norm_J2, valid_every, save_every, model_name_base, save,
+        n, l, optimizer, J2, norm_J2, valid_every, save_every, model_name_base, 
+        save, extra_steps=extra_steps
     )
 
 
@@ -297,6 +305,7 @@ def parse_arguments():
     parser.add_argument("--save_every", type=int, default=10, help="Frequency at which to save the model during training")
     parser.add_argument("--data_file", type=str, default=None, help="Path to data file for predefined patterns")
     parser.add_argument("--seed", type=int, default=444, help="Seed for random number generators")
+    parser.add_argument("--extra_steps", type=int, default=0, help="Extra steps to perform after training")
 
     return parser.parse_args()
 
@@ -314,4 +323,4 @@ if __name__ == "__main__":
     main(args.N, args.P, args.l, args.d, args.spin_type, args.init_overlap, args.n, 
          args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, 
          args.valid_every, args.P_generalization, save_every=args.save_every, 
-         data_file=args.data_file, save=args.save, seed=args.seed)
+         data_file=args.data_file, save=args.save, seed=args.seed, extra_steps=args.extra_steps)

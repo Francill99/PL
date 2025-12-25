@@ -27,12 +27,13 @@
                 "--N", "1024",
                 "--P", "50",
                 "--l", "1",
-                "--epochs", "20",
+                "--epochs", "8",
                 "--valid_every", "2",
                 "--data_file", "./data/temperature_0.99.txt",
                 "--save_every", "4",
                 "--save", 
-                "--seed", "42"
+                "--seed", "42", 
+                "--extra_steps", "10"
             ]
         }
     ]
