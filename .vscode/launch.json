@@ -25,7 +25,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--N", "1024",
-                "--P", "50",
+                "--P", "20480",
                 "--l", "1",
                 "--epochs", "8",
                 "--valid_every", "2",
@@ -33,7 +33,11 @@
                 "--save_every", "4",
                 "--save", 
                 "--seed", "42", 
-                "--extra_steps", "10"
+                "--extra_steps", "1000", 
+                "--factor_lr_decay", "1.0",
+                "--factor_lr_diminish_when_error", "0.9",
+                "--patience_lr", "50",
+                "--factor_J_diminish_when_error", "0.9"
             ]
         }
     ]

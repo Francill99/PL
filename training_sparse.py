@@ -53,7 +53,8 @@ def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vect
 
 def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_grad, 
                 device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, 
-                save_every, model_name_base, save, extra_steps=0):
+                save_every, model_name_base, save, extra_steps=0, factor_lr_decay=0.999, 
+                factor_lr_diminish_when_error=0.9, patience_lr=50, factor_J_diminish_when_error=0.9):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
@@ -70,11 +71,13 @@ def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_gr
     next_save_idx = 1  # 0 is untrained
 
     # Training loop
-    for epoch in range(1, epochs + 1):
+    epoch = 1
+    while epoch < epochs + 1:
         model.train()
         train_loss = 0.0
         counter = 0
-
+        counter_diminish_lr = 0
+        error_detected = False
         # Training batch-wise
         for batch_element in dataloader:
             counter += 1
@@ -97,12 +100,20 @@ def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_gr
                 train_loss += loss.item()
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
+                # Reduce J and learning rate
                 with torch.no_grad():
-                    model.J.data *= 0.1
-                learning_rate *= 0.1
-                # update optimizer LR as well
-                for pg in optimizer.param_groups:
-                    pg["lr"] = learning_rate
+                    model.J.data *= factor_J_diminish_when_error
+                if counter_diminish_lr >= patience_lr:
+                    learning_rate *= factor_lr_diminish_when_error
+                    # update optimizer LR as well
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = learning_rate
+                    counter_diminish_lr = 0
+                else:
+                    counter_diminish_lr += 1
+                error_detected = True
+        if error_detected:
+            epoch -= 1  # redo this epoch
 
         # Average training loss
         train_loss = train_loss / max(counter, 1)
@@ -158,9 +169,16 @@ def train_model(model, dataloader, dataloader_gen, epochs, learning_rate, max_gr
                     history=history,
                     save_idx=next_save_idx,
                 )
+        # Decay learning rate every epoch
+        learning_rate *= factor_lr_decay
+        for pg in optimizer.param_groups:
+            pg["lr"] = learning_rate
+
+        epoch += 1
 
     #############################################
 
+    epoch -= 1  # last epoch value
     # Final evaluation after training
     model.eval()
     vali_loss, vali_loss_max = compute_validation_overlap(
@@ -244,7 +262,8 @@ def load_data(data_file, P, N, d, skip=3):
 
 def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
          max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False,
-         seed=42, extra_steps=0):
+         seed=42, extra_steps=0, factor_lr_decay=0.999, factor_lr_diminish_when_error=0.9, 
+         patience_lr=50, factor_J_diminish_when_error=0.9):
     if P_generalization is None:
         P_generalization = P
     data_train = load_data(data_file, P, N, d)
@@ -279,7 +298,9 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
         model, dataloader, dataloader_gen, epochs, 
         learning_rate, max_grad, device, data_PATH, init_overlap, 
         n, l, optimizer, J2, norm_J2, valid_every, save_every, model_name_base, 
-        save, extra_steps=extra_steps
+        save, extra_steps=extra_steps, factor_lr_decay=factor_lr_decay, 
+        factor_lr_diminish_when_error=factor_lr_diminish_when_error, patience_lr=patience_lr, 
+        factor_J_diminish_when_error=factor_J_diminish_when_error
     )
 
 
@@ -306,6 +327,10 @@ def parse_arguments():
     parser.add_argument("--data_file", type=str, default=None, help="Path to data file for predefined patterns")
     parser.add_argument("--seed", type=int, default=444, help="Seed for random number generators")
     parser.add_argument("--extra_steps", type=int, default=0, help="Extra steps to perform after training")
+    parser.add_argument("--factor_lr_decay", type=float, default=1.0, help="Factor for learning rate decay each epoch")
+    parser.add_argument("--factor_lr_diminish_when_error", type=float, default=0.9, help="Factor to diminish learning rate when error detected")
+    parser.add_argument("--patience_lr", type=int, default=50, help="Patience for learning rate adjustment")
+    parser.add_argument("--factor_J_diminish_when_error", type=float, default=0.9, help="Factor to diminish J when error detected")
 
     return parser.parse_args()
 
@@ -323,4 +348,6 @@ if __name__ == "__main__":
     main(args.N, args.P, args.l, args.d, args.spin_type, args.init_overlap, args.n, 
          args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, 
          args.valid_every, args.P_generalization, save_every=args.save_every, 
-         data_file=args.data_file, save=args.save, seed=args.seed, extra_steps=args.extra_steps)
+         data_file=args.data_file, save=args.save, seed=args.seed, extra_steps=args.extra_steps, 
+         factor_lr_decay=args.factor_lr_decay, factor_lr_diminish_when_error=args.factor_lr_diminish_when_error, 
+         patience_lr=args.patience_lr, factor_J_diminish_when_error=args.factor_J_diminish_when_error)
