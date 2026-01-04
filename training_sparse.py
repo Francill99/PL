@@ -11,7 +11,7 @@ import torch
 from PL.model.model import TwoBodiesModel
 from PL.dataset.dataset import BasicDataset
 from PL.utils.saving import init_training_h5, save_training
-from PL.utils.functions import compute_asymmetry, compute_validation_overlap
+from PL.utils.functions import compute_asymmetry, compute_validation_overlap, create_mask_random_graph
 
 METRIC_NAMES = [
     "epoch",
@@ -31,13 +31,13 @@ METRIC_NAMES = [
 
 
 def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vector", device='cuda', gamma=0., 
-               init_Hebb=True, data_train=None, data_test=None, coefficients="binary"):
+               init_Hebb=True, data_train=None, data_test=None, coefficients="binary", custom_mask=None):
     # Initialize the dataset
     dataset = BasicDataset(P, N, d, spin_type=spin_type, coefficients=coefficients, xi=data_train)
     dataset_gen = BasicDataset(P_generalization, N, d, spin_type=spin_type, coefficients=coefficients, xi=data_test)
 
     # Initialize the model
-    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type, device=device)
+    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type, device=device, custom_mask=custom_mask)
     model.to(device)  # Move the model to the specified device
         # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
@@ -263,7 +263,8 @@ def load_data(data_file, P, N, d, skip=3):
 def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, 
          max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False,
          seed=42, extra_steps=0, factor_lr_decay=0.999, factor_lr_diminish_when_error=0.9, 
-         patience_lr=50, factor_J_diminish_when_error=0.9):
+         patience_lr=50, factor_J_diminish_when_error=0.9, apply_custom_mask=False, graph_type="erdos_renyi", 
+         connectivity=0.1, rewire_prob=0.5):
     if P_generalization is None:
         P_generalization = P
     data_train = load_data(data_file, P, N, d)
@@ -274,8 +275,14 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
     torch.cuda.empty_cache()
     gc.collect()
 
+    if apply_custom_mask:
+        custom_mask = create_mask_random_graph(N, connectivity, d, graph_type, rewire_prob)
+    else:
+        custom_mask = None
+
     dataset, dataset_gen, model, optimizer = initialize(N=N, P=P, P_generalization=P_generalization, d=d, lr=learning_rate, spin_type=spin_type, 
-                                                        device=device, data_train=data_train, data_test=data_test)
+                                                        device=device, data_train=data_train, data_test=data_test,
+                                                        custom_mask=custom_mask)
     
     batch_size = P
     batch_size_gen = P_generalization
@@ -331,6 +338,10 @@ def parse_arguments():
     parser.add_argument("--factor_lr_diminish_when_error", type=float, default=0.9, help="Factor to diminish learning rate when error detected")
     parser.add_argument("--patience_lr", type=int, default=50, help="Patience for learning rate adjustment")
     parser.add_argument("--factor_J_diminish_when_error", type=float, default=0.9, help="Factor to diminish J when error detected")
+    parser.add_argument("--apply_custom_mask", action='store_true', help="Whether to apply a custom mask to the coupling matrix J")
+    parser.add_argument("--graph_type", type=str, default="erdos_renyi", help="Type of random graph for custom mask: 'erdos_renyi' or 'watts_strogratz'")
+    parser.add_argument("--connectivity", type=float, default=0.1, help="Connectivity for random graph mask")
+    parser.add_argument("--rewire_prob", type=float, default=0.5, help="Rewiring probability for Watts-Strogatz graph")
 
     return parser.parse_args()
 
@@ -350,4 +361,6 @@ if __name__ == "__main__":
          args.valid_every, args.P_generalization, save_every=args.save_every, 
          data_file=args.data_file, save=args.save, seed=args.seed, extra_steps=args.extra_steps, 
          factor_lr_decay=args.factor_lr_decay, factor_lr_diminish_when_error=args.factor_lr_diminish_when_error, 
-         patience_lr=args.patience_lr, factor_J_diminish_when_error=args.factor_J_diminish_when_error)
+         patience_lr=args.patience_lr, factor_J_diminish_when_error=args.factor_J_diminish_when_error, 
+         apply_custom_mask=args.apply_custom_mask, graph_type=args.graph_type, connectivity=args.connectivity, 
+         rewire_prob=args.rewire_prob)

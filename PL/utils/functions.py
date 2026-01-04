@@ -1,6 +1,7 @@
 ## Standard libraries
 import numpy as np
 import torch
+import networkx as nx
 
 ## PyTorch
 import torch
@@ -285,3 +286,40 @@ def overlap(x: torch.Tensor,
 
     else:
         raise ValueError("spin_type must be 'vector' or 'continuous'.")
+
+
+def create_mask_random_graph(N: int, connectivity:float, d: int, graph_type: str, 
+                             rewire_prob: float = 0.5) -> torch.Tensor:
+    """
+    Create a random Erdos-Renyi graph mask for coupling matrix J.
+
+    Parameters
+    ----------
+    N : int   
+        Number of spins (size of the system).
+    connectivity : float
+        Probability of connection between any two spins (0 < connectivity <= 1).
+    d : int
+        Dimensionality of each spin.
+    graph_type : str
+        Type of graph: "erdos_renyi" or "watts-strogratz".
+    rewire_prob : float
+        Rewiring probability for Watts-Strogatz graph (only used if graph_type is "watts-strogratz").
+    Returns
+    -------
+    torch.Tensor
+        Mask tensor of shape (N, N) with 1s for existing connections and 0s elsewhere.
+    """
+    if graph_type == "erdos_renyi":
+        # Create an Erdos-Renyi graph adjacency matrix
+        G = nx.erdos_renyi_graph(N, connectivity)
+    elif graph_type == "watts-strogratz":
+        # Create a Watts-Strogatz small-world graph adjacency matrix
+        k = max(2, int(connectivity * (N - 1)))  # Ensure k is at least 2
+        G = nx.watts_strogatz_graph(N, k, rewire_prob)
+    else:
+        raise ValueError("graph_type must be 'erdos_renyi' or 'watts-strogratz'.")
+    adj_matrix = nx.to_numpy_array(G)
+    # Convert adjacency matrix to a torch tensor and expand for dxd blocks
+    mask = torch.tensor(adj_matrix, dtype=torch.float32)
+    return mask
