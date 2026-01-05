@@ -38,8 +38,9 @@ def initialize(N=1000, P=400, P_generalization=400, d=1, lr=0.1, spin_type="vect
 
     # Initialize the model
     model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type, device=device, custom_mask=custom_mask)
-    model.to(device)  # Move the model to the specified device
+    model.to(device)  # Move the model to the specified device    
         # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
+    print(f'J device after init: {model.J.device}, mask device: {model.mask.device}')
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     # Apply the Hebb rule

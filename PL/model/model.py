@@ -22,6 +22,7 @@ class TwoBodiesModel(nn.Module):
         self.custom_mask = custom_mask
 
         self.J = nn.Parameter(torch.randn(N, N, d, d))  # Interaction tensor
+        self.J = self.J.to(device)
 
         if self.custom_mask is not None:
             if custom_mask.shape != (N, N):
@@ -33,7 +34,6 @@ class TwoBodiesModel(nn.Module):
             self.mask.fill_diagonal_(0)  # Set diagonal to 0
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
 
-        print(f'Initial J device: {self.J.device}, mask device: {self.mask.device}')
         self.J.data *= self.mask  # Apply mask to J
 
 
@@ -59,12 +59,9 @@ class TwoBodiesModel(nn.Module):
         if form not in ["Isotropic", "Tensorial"]:
             raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")
 
-        print(f'J device before Hebb: {self.J.device}, xi device: {xi.device}')
         with torch.no_grad():
             self.J.zero_()
-            self.J.to(self.device)
 
-            print(f'J device after zero_: {self.J.device}, xi device: {xi.device}')
             if form == "Isotropic":
                 for mu in range(P):
                     for i in range(N):
@@ -81,8 +78,6 @@ class TwoBodiesModel(nn.Module):
                     outer_products[indices, indices] = 0
                     self.J += outer_products
 
-                print(f'J device after Hebb before mask: {self.J.device}, xi device: {xi.device}')
-                print(f'mask device: {self.mask.device}')
                 self.J.data *= self.mask  # Apply mask to J
 
     def dyn_step(self, x, a=None):
