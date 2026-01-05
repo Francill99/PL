@@ -58,10 +58,12 @@ class TwoBodiesModel(nn.Module):
         if form not in ["Isotropic", "Tensorial"]:
             raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")
 
+        print(f'J device before Hebb: {self.J.device}, xi device: {xi.device}')
         with torch.no_grad():
             self.J.zero_()
             self.J.to(self.device)
 
+            print(f'J device after zero_: {self.J.device}, xi device: {xi.device}')
             if form == "Isotropic":
                 for mu in range(P):
                     for i in range(N):
@@ -78,6 +80,8 @@ class TwoBodiesModel(nn.Module):
                     outer_products[indices, indices] = 0
                     self.J += outer_products
 
+                print(f'J device after Hebb before mask: {self.J.device}, xi device: {xi.device}')
+                print(f'mask device: {self.mask.device}')
                 self.J.data *= self.mask  # Apply mask to J
 
     def dyn_step(self, x, a=None):
