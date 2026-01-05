@@ -40,8 +40,8 @@
                 "--patience_lr", "50",
                 "--factor_J_diminish_when_error", "0.9" 
                 , "--apply_custom_mask",
-                // "--graph_type", "erdos_renyi",
-                "--graph_type", "watts-strogratz",
+                // "--graph_type", "erdos-renyi",
+                "--graph_type", "watts-strogatz",
                 "--connectivity", "10"
             ]
         }
