@@ -21,8 +21,7 @@ class TwoBodiesModel(nn.Module):
         self.spin_type = spin_type
         self.custom_mask = custom_mask
 
-        self.J = nn.Parameter(torch.randn(N, N, d, d))  # Interaction tensor
-        self.J = self.J.to(device)
+        self.J = nn.Parameter(torch.randn(N, N, d, d, device=device))  # Interaction tensor
 
         if self.custom_mask is not None:
             if custom_mask.shape != (N, N):
