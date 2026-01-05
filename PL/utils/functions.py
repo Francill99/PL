@@ -310,7 +310,7 @@ def create_mask_random_graph(N: int, connectivity:float, d: int, graph_type: str
     torch.Tensor
         Mask tensor of shape (N, N) with 1s for existing connections and 0s elsewhere.
     """
-    if graph_type == "erdos_renyi":
+    if graph_type == "erdos-renyi":
         # Create an Erdos-Renyi graph adjacency matrix
         p = connectivity / (N - 1)  # Adjust probability for undirected graph
         G = nx.erdos_renyi_graph(N, p)
