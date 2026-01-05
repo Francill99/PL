@@ -25,7 +25,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--N", "1024",
-                "--P", "20480",
+                "--P", "50",
                 "--l", "1",
                 "--epochs", "8",
                 "--valid_every", "2",
@@ -33,11 +33,16 @@
                 "--save_every", "4",
                 "--save", 
                 "--seed", "42", 
-                "--extra_steps", "1000", 
-                "--factor_lr_decay", "1.0",
+                "--extra_steps", "1000",
+                "--learning_rate", "10", 
+                "--factor_lr_decay", "0.999",
                 "--factor_lr_diminish_when_error", "0.9",
                 "--patience_lr", "50",
-                "--factor_J_diminish_when_error", "0.9"
+                "--factor_J_diminish_when_error", "0.9" 
+                , "--apply_custom_mask",
+                // "--graph_type", "erdos_renyi",
+                "--graph_type", "watts-strogratz",
+                "--connectivity", "10"
             ]
         }
     ]

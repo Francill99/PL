@@ -340,7 +340,7 @@ def parse_arguments():
     parser.add_argument("--factor_J_diminish_when_error", type=float, default=0.9, help="Factor to diminish J when error detected")
     parser.add_argument("--apply_custom_mask", action='store_true', help="Whether to apply a custom mask to the coupling matrix J")
     parser.add_argument("--graph_type", type=str, default="erdos_renyi", help="Type of random graph for custom mask: 'erdos_renyi' or 'watts_strogratz'")
-    parser.add_argument("--connectivity", type=float, default=0.1, help="Connectivity for random graph mask")
+    parser.add_argument("--connectivity", type=float, default=3, help="Connectivity for random graph mask")
     parser.add_argument("--rewire_prob", type=float, default=0.5, help="Rewiring probability for Watts-Strogatz graph")
 
     return parser.parse_args()

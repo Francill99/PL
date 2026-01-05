@@ -19,6 +19,7 @@ class TwoBodiesModel(nn.Module):
         self.r = r
         self.device = device
         self.spin_type = spin_type
+        self.custom_mask = custom_mask
 
         self.J = nn.Parameter(torch.randn(N, N, d, d))  # Interaction tensor
 
@@ -178,7 +179,7 @@ class TwoBodiesModel(nn.Module):
             if l2 is False:
                 return energy_i_mu.mean(dim=0)
             else:
-                return -x_J_x.mean() + alpha * (J_masked.data**2).mean()
+                return -x_J_x.mean() + alpha * (J_masked**2).mean()
 
         else:
             # Full product over all sites
@@ -198,7 +199,7 @@ class TwoBodiesModel(nn.Module):
             if l2 is False:
                 return energy_i_mu.mean(dim=0)
             else:
-                return -x_J_x.mean() + alpha * (J_masked.data**2).mean()
+                return -x_J_x.mean() + alpha * (J_masked**2).mean()
 
     def _crossentropy_vector_ddim(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
@@ -251,7 +252,7 @@ class TwoBodiesModel(nn.Module):
             if not l2:
                 return energy_i_mu.mean()
             else:
-                l2_term = (J_masked.data ** 2).mean()
+                l2_term = (J_masked ** 2).mean()
                 return energy_i_mu.mean() + l2_term
 
         # Local fields for all sites:

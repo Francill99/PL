@@ -312,10 +312,11 @@ def create_mask_random_graph(N: int, connectivity:float, d: int, graph_type: str
     """
     if graph_type == "erdos_renyi":
         # Create an Erdos-Renyi graph adjacency matrix
-        G = nx.erdos_renyi_graph(N, connectivity)
+        p = connectivity / (N - 1)  # Adjust probability for undirected graph
+        G = nx.erdos_renyi_graph(N, p)
     elif graph_type == "watts-strogratz":
         # Create a Watts-Strogatz small-world graph adjacency matrix
-        k = max(2, int(connectivity * (N - 1)))  # Ensure k is at least 2
+        k = max(2, int(connectivity))  # Ensure k is at least 2
         G = nx.watts_strogatz_graph(N, k, rewire_prob)
     else:
         raise ValueError("graph_type must be 'erdos_renyi' or 'watts-strogratz'.")
