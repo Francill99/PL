@@ -33,6 +33,7 @@ class TwoBodiesModel(nn.Module):
             self.mask.fill_diagonal_(0)  # Set diagonal to 0
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
 
+        print(f'Initial J device: {self.J.device}, mask device: {self.mask.device}')
         self.J.data *= self.mask  # Apply mask to J
 
 
