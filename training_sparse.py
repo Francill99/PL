@@ -288,7 +288,7 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
     batch_size_gen = P_generalization
 
 
-    model2 = TwoBodiesModel(N, d, spin_type=spin_type, device=device)
+    model2 = TwoBodiesModel(N, d, spin_type=spin_type, device=device, custom_mask=custom_mask)
     model2.to(device)
     model2.Hebb(dataset.xi, 'Tensorial')  # Applying the Hebb rule
     J2 = model2.J.squeeze().cpu().detach().numpy()
@@ -349,8 +349,13 @@ def parse_arguments():
 
 if __name__ == "__main__":
     print("GPU available:", torch.cuda.is_available())
+    
 
     args = parse_arguments()
+
+    if not torch.cuda.is_available():
+        print("CUDA not available, using CPU.")
+        args.device = 'cpu'
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)

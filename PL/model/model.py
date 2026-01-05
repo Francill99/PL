@@ -78,7 +78,7 @@ class TwoBodiesModel(nn.Module):
                     outer_products[indices, indices] = 0
                     self.J += outer_products
 
-                self.J *= self.mask  # Apply mask to J
+                self.J.data *= self.mask  # Apply mask to J
 
     def dyn_step(self, x, a=None):
         """
