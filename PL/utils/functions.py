@@ -289,7 +289,7 @@ def overlap(x: torch.Tensor,
 
 
 def create_mask_random_graph(N: int, connectivity:float, graph_type: str, 
-                             rewire_prob: float = 0.5) -> torch.Tensor:
+                             rewire_prob: float = 0.5, reorder: bool = False) -> torch.Tensor:
     """
     Create a random Erdos-Renyi graph mask for coupling matrix J.
 
@@ -323,4 +323,7 @@ def create_mask_random_graph(N: int, connectivity:float, graph_type: str,
     adj_matrix = nx.to_numpy_array(G)
     # Convert adjacency matrix to a torch tensor and expand for dxd blocks
     mask = torch.tensor(adj_matrix, dtype=torch.float32)
+    if reorder:
+        permutation = torch.randperm(N)
+        mask = mask[permutation][:, permutation]
     return mask

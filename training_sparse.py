@@ -265,7 +265,7 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
          max_grad, valid_every, P_generalization, save_every=10, data_file=None, save=False,
          seed=42, extra_steps=0, factor_lr_decay=0.999, factor_lr_diminish_when_error=0.9, 
          patience_lr=50, factor_J_diminish_when_error=0.9, apply_custom_mask=False, graph_type="erdos-renyi", 
-         connectivity=4, rewire_prob=0.5):
+         connectivity=4, rewire_prob=0.5, reorder=False):
     if P_generalization is None:
         P_generalization = P
     data_train = load_data(data_file, P, N, d)
@@ -277,7 +277,7 @@ def main(N, P, l, d, spin_type, init_overlap, n, device, data_PATH, epochs, lear
     gc.collect()
 
     if apply_custom_mask:
-        custom_mask = create_mask_random_graph(N, connectivity, graph_type, rewire_prob)
+        custom_mask = create_mask_random_graph(N, connectivity, graph_type, rewire_prob, reorder)
     else:
         custom_mask = None
 
@@ -343,6 +343,7 @@ def parse_arguments():
     parser.add_argument("--graph_type", type=str, default="erdos-renyi", help="Type of random graph for custom mask: 'erdos-renyi' or 'watts-strogatz'")
     parser.add_argument("--connectivity", type=float, default=4, help="Connectivity for random graph mask")
     parser.add_argument("--rewire_prob", type=float, default=0.5, help="Rewiring probability for Watts-Strogatz graph")
+    parser.add_argument("--permute_mask", action='store_true', help="Whether to permute the custom mask")
 
     return parser.parse_args()
 
@@ -369,4 +370,4 @@ if __name__ == "__main__":
          factor_lr_decay=args.factor_lr_decay, factor_lr_diminish_when_error=args.factor_lr_diminish_when_error, 
          patience_lr=args.patience_lr, factor_J_diminish_when_error=args.factor_J_diminish_when_error, 
          apply_custom_mask=args.apply_custom_mask, graph_type=args.graph_type, connectivity=args.connectivity, 
-         rewire_prob=args.rewire_prob)
+         rewire_prob=args.rewire_prob, reorder=args.permute_mask)
