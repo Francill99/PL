@@ -36,9 +36,7 @@ METRIC_NAMES = [
 
 def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda', L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
-    dataset = RandomFeaturesDataset(P, N, D, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L)
-    if D>0:
-        dataset.RF(seed=444)
+    dataset = RandomFeaturesDataset(P, N, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L, D=D)
 
     # Initialize the model
     model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)

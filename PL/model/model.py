@@ -3,11 +3,14 @@ import torch
 import torch.nn as nn
 
 class TwoBodiesModel(nn.Module):
-    def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector"):
+    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
             - 'continuous' : continuous spins (independent of d)
+        N: Number of sites
+        d: Dimensionality of each site
+        custom_mask: Optional [N, N] tensor to mask interactions in J.
         """
         super(TwoBodiesModel, self).__init__()
         self.N = N
@@ -15,16 +18,23 @@ class TwoBodiesModel(nn.Module):
         self.gamma = gamma
         self.r = r
         self.device = device
-        self.spin_type = spin_type  # NEW
+        self.spin_type = spin_type
+        self.custom_mask = custom_mask
 
-        self.J = nn.Parameter(torch.randn(N, N, d, d))
-        diagonal = self.J.data.diagonal(dim1=0, dim2=1)  # Get diagonal elements
-        diagonal.fill_(0)
-        #self.normalize_J()
+        self.J = nn.Parameter(torch.randn(N, N, d, d, device=device))  # Interaction tensor
 
-        self.mask = torch.ones(N, N, device=self.J.device)  # Shape [N, N]
-        self.mask.fill_diagonal_(0)  # Set diagonal to 0
-        self.mask = self.mask.unsqueeze(-1).unsqueeze(-1)  # Shape [N, N, 1, 1]
+        if self.custom_mask is not None:
+            if custom_mask.shape != (N, N):
+                raise ValueError(f"custom_mask must have shape ({N}, {N})")
+            self.mask = custom_mask.to(self.J.device)
+            self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
+        else:
+            self.mask = torch.ones(N, N, device=self.J.device)  # Shape [N, N]
+            self.mask.fill_diagonal_(0)  # Set diagonal to 0
+            self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
+
+        self.J.data *= self.mask  # Apply mask to J
+
 
     def normalize_J(self):
         with torch.no_grad():
@@ -50,7 +60,6 @@ class TwoBodiesModel(nn.Module):
 
         with torch.no_grad():
             self.J.zero_()
-            self.J.to(self.device)
 
             if form == "Isotropic":
                 for mu in range(P):
@@ -58,6 +67,8 @@ class TwoBodiesModel(nn.Module):
                         for j in range(N):
                             if i != j:
                                 self.J[i, j, :, :] += torch.sum(xi[mu, i, :] * xi[mu, j, :]) / N
+                if self.custom_mask is not None:
+                    self.J.data *= self.mask  # Apply custom mask to J
             elif form == "Tensorial":
                 for mu in range(P):
                     xi_mu = xi[mu].to(self.device)  # Shape: (N, d)
@@ -66,8 +77,7 @@ class TwoBodiesModel(nn.Module):
                     outer_products[indices, indices] = 0
                     self.J += outer_products
 
-                diagonal = self.J.data.diagonal(dim1=0, dim2=1)
-                diagonal.fill_(0)
+                self.J.data *= self.mask  # Apply mask to J
 
     def dyn_step(self, x, a=None):
         """
@@ -95,13 +105,11 @@ class TwoBodiesModel(nn.Module):
 
         # Enforce zero self-coupling (no self-interaction)
         with torch.no_grad():
-            diagonal = self.J.diagonal(dim1=0, dim2=1)  # [N, d, d]
-            diagonal.zero_()
+            masked_J = self.J.data * self.mask  # Apply mask to J
 
         # Local field u = J x
         # J: [N, N, d, d]; x: [B, N, d]  ->  J_x: [B, N, d]
-        J_x = torch.einsum('ijab,Bjb->Bia', self.J, x)
-
+        J_x = torch.einsum('ijab,Bjb->Bia', masked_J, x)
         with torch.no_grad():
             # Effective pre-projected state
             if a is None:
@@ -143,7 +151,7 @@ class TwoBodiesModel(nn.Module):
             else:
                 return self._crossentropy_vector_ddim(xi_batch, lambd, alpha, i_rand, r, l2)
         elif self.spin_type == "continuous":
-            return self._crossentropy_continuous(xi_batch, lambd, alpha, i_rand, r, l2)
+            return self._crossentropy_continuous(xi_batch, lambd, i_rand, r, l2)
         else:
             raise ValueError(f"Unknown spin_type: {self.spin_type}")
 
@@ -152,10 +160,7 @@ class TwoBodiesModel(nn.Module):
         Pseudolikelihood for binary spins (d=1).
         Keeps the same logic as the original forward().
         """
-        # Ensure no self-interaction
-        diagonal = self.J.data.diagonal(dim1=0, dim2=1)
-        diagonal.fill_(0)
-        J_masked = self.J  # (N,N,1,1) effectively when d=1
+        J_masked = self.J * self.mask  # Apply mask to J
 
         if i_rand is not None:
             # Single-site contribution for site i_rand
@@ -173,7 +178,7 @@ class TwoBodiesModel(nn.Module):
             if l2 is False:
                 return energy_i_mu.mean(dim=0)
             else:
-                return -x_J_x.mean() + alpha * (self.J.data**2).mean()
+                return -x_J_x.mean() + alpha * (J_masked**2).mean()
 
         else:
             # Full product over all sites
@@ -193,7 +198,7 @@ class TwoBodiesModel(nn.Module):
             if l2 is False:
                 return energy_i_mu.mean(dim=0)
             else:
-                return -x_J_x.mean() + alpha * (self.J.data**2).mean()
+                return -x_J_x.mean() + alpha * (J_masked**2).mean()
 
     def _crossentropy_vector_ddim(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
@@ -217,10 +222,7 @@ class TwoBodiesModel(nn.Module):
         Returns:
             Scalar loss (mean over patterns, and over sites when i_rand is None).
         """
-        # Ensure no self-interaction: set diagonal blocks of J to zero (no_grad is fine here)
-        diagonal = self.J.data.diagonal(dim1=0, dim2=1)
-        diagonal.fill_(0)
-        J_masked = self.J  # (N, N, d, d) with diagonal ~ 0
+        J_masked = self.J * self.mask  # Apply mask to J
 
 
         if i_rand is not None:
@@ -249,7 +251,7 @@ class TwoBodiesModel(nn.Module):
             if not l2:
                 return energy_i_mu.mean()
             else:
-                l2_term = (self.J ** 2).mean()
+                l2_term = (J_masked ** 2).mean()
                 return energy_i_mu.mean() + l2_term
 
         # Local fields for all sites:
@@ -279,10 +281,10 @@ class TwoBodiesModel(nn.Module):
         if not l2:
             return energy_i_mu.mean()
         else:
-            l2_term = (self.J ** 2).mean()
+            l2_term = (J_masked.data ** 2).mean()
             return energy_i_mu.mean() + l2_term
 
-    def _crossentropy_continuous(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def _crossentropy_continuous(self, xi_batch, lambd, i_rand=None, r=1, l2=False):
         """
         Pseudolikelihood for continuous variables with Gaussian regularization.
 
@@ -308,11 +310,7 @@ class TwoBodiesModel(nn.Module):
         """
         gamma = self.gamma  # you must define this in __init__
 
-        # Ensure no self-interaction: zero diagonal blocks of J
-        with torch.no_grad():
-            diagonal = self.J.diagonal(dim1=0, dim2=1)  # [N, d, d]
-            diagonal.zero_()
-        J_masked = self.J  # (N, N, d, d) with zero diagonal
+        J_masked = self.J * self.mask  # Apply mask to J
 
         if i_rand is not None:
             # Local field at site i_rand: u_i^μ = Σ_j J_{i_rand,j} y_j^μ
@@ -348,7 +346,7 @@ class TwoBodiesModel(nn.Module):
 
         # Optional L2 penalty on J
         if l2:
-            l2_term = (self.J ** 2).mean()
+            l2_term = (J_masked ** 2).mean()
             loss = loss + l2_term
 
         return loss
