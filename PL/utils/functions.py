@@ -121,10 +121,6 @@ def start_overlap(
 
     return init_vectors
 
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
-
 
 def basins_of_attraction_inp_vectors(
     init_overlaps_array,

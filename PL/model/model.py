@@ -75,6 +75,53 @@ class TwoBodiesModel(nn.Module):
                 diagonal = self.J.data.diagonal(dim1=0, dim2=1)
                 diagonal.fill_(0)
 
+    def Hebb_classifier(self, xi, y, form="Tensorial"):
+        """
+        Supervised Hebbian initialization of J using (xi_mu, y_mu).
+    
+        Args:
+            xi: [P, N, d] input patterns
+            y : [P, N, d] labels (same "single-spin nature" as xi)
+            form: "Isotropic" or "Tensorial"
+    
+        Builds:
+            Tensorial:  J[i,j,a,b] = (1/N) * sum_mu y[mu,i,a] * xi[mu,j,b]
+            Isotropic:  J[i,j,:,:] = (1/N) * sum_mu <y[mu,i], xi[mu,j]>   (broadcast over a,b)
+    
+        Diagonal J[i,i,:,:] is set to 0 (as in your classic Hebb).
+        """
+        if form not in ["Isotropic", "Tensorial"]:
+            raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")
+    
+        if xi.ndim != 3 or y.ndim != 3:
+            raise ValueError(f"xi and y must be 3D tensors [P,N,d]. Got xi {xi.shape}, y {y.shape}")
+    
+        P, N, d = xi.shape
+        if N != self.N or d != self.d:
+            raise ValueError(f"Shape mismatch: xi is {xi.shape} but model expects N={self.N}, d={self.d}")
+        if y.shape != xi.shape:
+            raise ValueError(f"y must have same shape as xi. Got y {y.shape}, xi {xi.shape}")
+    
+        xi = xi.to(self.device)
+        y = y.to(self.device)
+    
+        with torch.no_grad():
+            self.J.zero_()
+    
+            if form == "Tensorial":
+                # Vectorized over mu: J_ijab = (1/N) sum_mu y_mia * xi_mjb
+                self.J.copy_(torch.einsum("pia,pjb->ijab", y, xi) / self.N)
+    
+            else:  # "Isotropic"
+                # s_ij = (1/N) sum_mu dot(y_mi, xi_mj)
+                s = torch.einsum("pia,pja->ij", y, xi) / self.N
+                self.J.copy_(s[:, :, None, None])  # broadcast to [N,N,d,d]
+    
+            # zero diagonal
+            idx = torch.arange(self.N, device=self.device)
+            self.J[idx, idx, :, :] = 0.0
+    
+
     def dyn_step(self, x, a=None):
         """
         One dynamical update step for the state x.
@@ -266,7 +313,7 @@ class TwoBodiesModel(nn.Module):
             y_i_mu = xi_batch                                        # [M, N, d]
             y_dot_u = torch.einsum('mia,mia->mi', y_i_mu, J_x)       # [M, N]
             x_arg = lambd * r * u_norm                                # [M]
-            normalization = LogKd.apply(x_arg, self.d,True)
+            normalization = LogKd.apply(x_arg, self.d, True)
             energy_i_mu = -y_dot_u + normalization
             # Average over sites i, then over patterns mu
             energy_i_mu = energy_i_mu.mean(dim=1)                    # [M]

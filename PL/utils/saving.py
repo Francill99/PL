@@ -24,22 +24,8 @@ import numpy as np
 import h5py
 import torch
 
-METRIC_NAMES = [
-    "epoch",
-    "norm_J",
-    "train_loss",
-    "learning_rate",
-    "vali_loss",
-    "vali_loss_f",
-    "vali_loss_gen",
-    "vali_loss_max",
-    "vali_loss_f_max",
-    "vali_loss_gen_max",
-    "x_norm",
-]
 
-
-def init_training_h5(h5_path, model, optimizer=None):
+def init_training_h5(h5_path, model, METRIC_NAMES, optimizer=None):
     """
     Initialize the HDF5 file for training:
 
@@ -119,7 +105,7 @@ def save_training(h5_path, model, optimizer, epoch, history, save_idx):
 
     return save_idx + 1
 
-def load_training(h5_path, save_idx, model, optimizer=None, device=None):
+def load_training(h5_path, save_idx, model, METRIC_NAMES, optimizer=None, device=None):
     """
     Load model (into the given model instance), optimizer (optional)
     and metrics from a given save index.
