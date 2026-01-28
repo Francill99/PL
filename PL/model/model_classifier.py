@@ -167,7 +167,7 @@ class Classifier(nn.Module):
         y_dot_u = torch.einsum('ma,ma->m', y_batch, J_x)       # [M, N]
         x_arg = lambd * r * u_norm                                # [M]
         normalization = LogKd.apply(x_arg, self.d, True)
-        energy_i_mu = -y_dot_u + normalization
+        energy_i_mu = -y_dot_u + 1/lambd*normalization
         # Average over sites i, then over patterns mu
         if l2 is None:
             return energy_i_mu.mean()

@@ -58,21 +58,21 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
 
-    print("# epoch lambda train_loss learning_rate train_metric R")
+    print("# epoch norm train_loss learning_rate train_metric R")
     t_in = time.time()
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
     init_training_h5(h5_path, model, METRIC_NAMES, optimizer)
     next_save_idx = 1  # 0 is untrained
-
+    # in case zero training epochs
+    epoch=0 
     # Training loop
     for epoch in range(epochs):
         t0 = time.time()
         model.train()
-        train_loss = 0.0
-        train_acc = 0.0
         counter = 0
+        train_loss_t = torch.zeros((), device=device)
 
         # Training batch-wise
         for batch_element in dataloader:
@@ -92,8 +92,11 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
 
                 # optimizer step
                 optimizer.step()
-
-                train_loss += loss.item()
+                with torch.no_grad():
+                    if fixed_norm==True:
+                        model.normalize_J()
+                    train_loss_t += loss.detach()
+            
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
                 with torch.no_grad():
@@ -102,21 +105,26 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
                 # update optimizer LR as well
                 for pg in optimizer.param_groups:
                     pg["lr"] = learning_rate
-            
-            if fixed_norm==True:
-                model.normalize_J()
-            y_pred = model(xi)
-            accuracy = torch.mean(overlap(y, y_pred))
-            train_acc += accuracy.item()
 
-        # Average training loss
-        train_loss = train_loss / max(counter, 1)
-        train_acc = train_acc / max(counter, 1)
         model.eval()
 
         # Validation and model saving
         if epoch % valid_every == 0 and epoch > 0:
-            R = (torch.einsum("jab,jab->j", dataset.T.to(device), model.J)/(torch.norm(model.J)*torch.norm(dataset.T))).sum().item()
+            # Average training loss
+            train_loss = (train_loss_t / counter).item()
+            counter_acc = 0
+            for batch_element in dataloader:
+                counter_acc += 1
+                xi, y = batch_element
+                xi = xi.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
+                y_pred = model(xi)
+                accuracy  =  overlap(y, y_pred).mean()
+                train_acc += accuracy.item()
+            train_acc = train_acc / max(counter_acc, 1)
+            
+
+            R = (torch.einsum("iab,iab->", dataset.T.to(device), model.J) / (dataset.T.to(device).norm() * model.J.norm())).cpu().item()
 
             # print("xi", torch.norm(xi, dim=-1))
             # print("y", torch.norm(y))
@@ -155,10 +163,10 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
 
     # Final evaluation after training
     model.eval()
-    R = (torch.einsum("jab,jab->j", dataset.T.to(device), model.J)/(torch.norm(model.J)*torch.norm(dataset.T))).mean().item()
+    R = (torch.einsum("iab,iab->", dataset.T.to(device), model.J) / (dataset.T.to(device).norm() * model.J.norm())).cpu().item()
     # Compute model parameters for logging
     J = model.J.squeeze().cpu().detach().numpy()
-    norm_J = torch.norm(model.J, dim=1).mean().item()
+    norm_J = torch.norm(model.J, dim=1).cpu().mean().item()
     diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
     # Append to history used for h5 saving
