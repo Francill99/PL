@@ -1,21 +1,10 @@
 ## Standard libraries
-import os
 import numpy as np
-import random
-import math
-import time
-import copy
-import argparse
 import torch
-import gc
+import networkx as nx
 
 ## PyTorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data as data
-import torch.optim as optim
-from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 def compute_asymmetry(J: np.ndarray) -> float:
@@ -294,3 +283,41 @@ def overlap(x: torch.Tensor,
 
     else:
         raise ValueError("spin_type must be 'vector' or 'continuous'.")
+
+
+def create_mask_random_graph(N: int, connectivity:float, graph_type: str, 
+                             rewire_prob: float = 0.5) -> torch.Tensor:
+    """
+    Create a random Erdos-Renyi graph mask for coupling matrix J.
+
+    Parameters
+    ----------
+    N : int   
+        Number of spins (size of the system).
+    connectivity : float
+        Probability of connection between any two spins (0 < connectivity <= 1).
+    d : int
+        Dimensionality of each spin.
+    graph_type : str
+        Type of graph: "erdos-renyi" or "watts-strogatz".
+    rewire_prob : float
+        Rewiring probability for Watts-Strogatz graph (only used if graph_type is "watts-strogatz").
+    Returns
+    -------
+    torch.Tensor
+        Mask tensor of shape (N, N) with 1s for existing connections and 0s elsewhere.
+    """
+    if graph_type == "erdos-renyi":
+        # Create an Erdos-Renyi graph adjacency matrix
+        p = connectivity / (N - 1)  # Adjust probability for undirected graph
+        G = nx.erdos_renyi_graph(N, p)
+    elif graph_type == "watts-strogatz":
+        # Create a Watts-Strogatz small-world graph adjacency matrix
+        k = max(2, int(connectivity))  # Ensure k is at least 2
+        G = nx.watts_strogatz_graph(N, k, rewire_prob)
+    else:
+        raise ValueError("graph_type must be 'erdos-renyi' or 'watts-strogatz'.")
+    adj_matrix = nx.to_numpy_array(G)
+    # Convert adjacency matrix to a torch tensor and expand for dxd blocks
+    mask = torch.tensor(adj_matrix, dtype=torch.float32)
+    return mask

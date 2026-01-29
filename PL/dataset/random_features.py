@@ -1,32 +1,85 @@
 ## Standard libraries
-import os
-import numpy as np
-import random
 import math
-import time
-import copy
-import argparse
 import torch
-import gc
 
 ## PyTorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.data as data
-import torch.optim as optim
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 
 
-class RandomFeaturesDataset(Dataset):
+
+class BasicDataset(Dataset):
     def __init__(
         self,
-        P, N, D, d,
-        sigma,
+        P, N, d,
+        seed=None,
+        sigma=1.0,
+        spin_type="continuous",        # "vector" or "continuous"
+        coefficients="binary",
+        xi=None,
+    ):
+        """
+        P: Number of patterns
+        N: Number of sites
+        d: Dimensionality of each site
+        sigma: Std of Gaussian noise
+        spin_type: "vector" (O(d) spins on unit sphere) or "continuous"
+                   (unconstrained real spins). Binary Ising is the
+                   special case spin_type="vector", d=1.
+        coefficients: "binary" or "gaussian" (for c), independent of spin type.
+        xi: Optional pre-defined patterns (P x N x d tensor)
+        """
+        self.P = P
+        self.N = N
+        self.d = d
+        self.spin_type = spin_type
+        self.coefficients = coefficients
+        ...
+
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        if xi is not None:
+            # Take provided patterns
+            self.xi = xi
+        else:    
+            # Fill with class default
+            self.xi = self.random_patterns(P, N, d, sigma)
+
+        # Vectorial case: normalize spins on S^{d-1}
+        if self.spin_type == "vector":
+            self.xi = self.normalize(self.xi)
+
+
+    def random_patterns(self, P, N, d, sigma):
+        # Base patterns xi ~ Gaussian
+        return torch.randn(P, N, d) * sigma
+
+
+    def normalize(self, x):
+        # Normalize each d-dimensional vector in x along the last dimension
+        norms = x.norm(dim=-1, keepdim=True)+1e-9
+        return x / norms
+
+    def __len__(self):
+        # Return the number of patterns P
+        return self.P
+
+    def __getitem__(self, index):
+        # Return the pattern xi at the given index
+        return self.xi[index]
+
+
+class RandomFeaturesDataset(BasicDataset):
+    def __init__(
+        self,
+        P, N, d,
+        sigma=1.0,
         seed=None,
         spin_type="continuous",        # "vector" or "continuous"
         coefficients="binary",
+        D=0,
         L=None,
     ):
         """
@@ -39,33 +92,17 @@ class RandomFeaturesDataset(Dataset):
                    (unconstrained real spins). Binary Ising is the
                    special case spin_type="vector", d=1.
         coefficients: "binary" or "gaussian" (for c), independent of spin type.
+        xi: Optional pre-defined patterns (P x N x d tensor)
         """
-        self.P = P
-        self.N = N
+        super().__init__(P, N, d, sigma=sigma, seed=seed, spin_type=spin_type, coefficients=coefficients)
         self.D = D
-        self.d = d
+        self.L = L if L is not None else D
         self.sigma = sigma
-        self.spin_type = spin_type
-        self.coefficients = coefficients
-        ...
-        if L is None:
-            self.L = D
-        else:
-            self.L = L
-
-        if seed is not None:
-            torch.manual_seed(seed)
-
-        # Base patterns xi ~ Gaussian
-        self.xi = torch.randn(P, N, d) * sigma
-
+        
         # If D > 0, build xi from random features
         if self.D > 0:
-            self.RF()
+            self.RF(seed=seed)
 
-        # Vectorial case: normalize spins on S^{d-1}
-        if self.spin_type == "vector":
-            self.xi = self.normalize(self.xi)
 
     def RF(self, seed=None):
         if seed is not None:
@@ -139,19 +176,15 @@ class RandomFeaturesDataset(Dataset):
             self.xi_new = self.normalize(self.xi_new)
 
         return self.xi_new
+    
+
 
     def normalize(self, x):
         # Normalize each d-dimensional vector in x along the last dimension
         norms = x.norm(dim=-1, keepdim=True)+1e-9
         return  x / norms
 
-    def __len__(self):
-        # Return the number of patterns P
-        return self.P
 
-    def __getitem__(self, index):
-        # Return the pattern xi at the given index
-        return self.xi[index]
 
 class GeneralDataset(Dataset):
     def __init__(self, D, f):
