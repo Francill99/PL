@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 
+from PL.utils.k_d import LogKd
+
 class TwoBodiesModel(nn.Module):
     def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None):
         """
@@ -79,6 +81,53 @@ class TwoBodiesModel(nn.Module):
 
                 self.J.data *= self.mask  # Apply mask to J
 
+    def Hebb_classifier(self, xi, y, form="Tensorial"):
+        """
+        Supervised Hebbian initialization of J using (xi_mu, y_mu).
+    
+        Args:
+            xi: [P, N, d] input patterns
+            y : [P, N, d] labels (same "single-spin nature" as xi)
+            form: "Isotropic" or "Tensorial"
+    
+        Builds:
+            Tensorial:  J[i,j,a,b] = (1/N) * sum_mu y[mu,i,a] * xi[mu,j,b]
+            Isotropic:  J[i,j,:,:] = (1/N) * sum_mu <y[mu,i], xi[mu,j]>   (broadcast over a,b)
+    
+        Diagonal J[i,i,:,:] is set to 0 (as in your classic Hebb).
+        """
+        if form not in ["Isotropic", "Tensorial"]:
+            raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")
+    
+        if xi.ndim != 3 or y.ndim != 3:
+            raise ValueError(f"xi and y must be 3D tensors [P,N,d]. Got xi {xi.shape}, y {y.shape}")
+    
+        P, N, d = xi.shape
+        if N != self.N or d != self.d:
+            raise ValueError(f"Shape mismatch: xi is {xi.shape} but model expects N={self.N}, d={self.d}")
+        if y.shape != xi.shape:
+            raise ValueError(f"y must have same shape as xi. Got y {y.shape}, xi {xi.shape}")
+    
+        xi = xi.to(self.device)
+        y = y.to(self.device)
+    
+        with torch.no_grad():
+            self.J.zero_()
+    
+            if form == "Tensorial":
+                # Vectorized over mu: J_ijab = (1/N) sum_mu y_mia * xi_mjb
+                self.J.copy_(torch.einsum("pia,pjb->ijab", y, xi) / self.N)
+    
+            else:  # "Isotropic"
+                # s_ij = (1/N) sum_mu dot(y_mi, xi_mj)
+                s = torch.einsum("pia,pja->ij", y, xi) / self.N
+                self.J.copy_(s[:, :, None, None])  # broadcast to [N,N,d,d]
+    
+            # zero diagonal
+            idx = torch.arange(self.N, device=self.device)
+            self.J[idx, idx, :, :] = 0.0
+    
+
     def dyn_step(self, x, a=None):
         """
         One dynamical update step for the state x.
@@ -138,10 +187,29 @@ class TwoBodiesModel(nn.Module):
         if self.d == 1:
             Z_i_mu = 2 * torch.cosh(lambd * r * y_i_mu)  # [M, N] or [M]
         else:
-            print("To define normalization for d>1")
+            print("Z_i_mu_func defined only for d=1")
         return Z_i_mu
+    
+    def loss(self, xi_batch, loss_type="CE", lambd=1., alpha=1., i_rand=None, r=1, l2=False):
+        if loss_type=="CE":
+            return self.compute_crossentropy(xi_batch, lambd,  alpha, i_rand, r, l2)
+        elif loss_type=="MSE":
+            return self.compute_MSE(xi_batch, lambd, alpha, l2)
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
 
-    def compute_crossentropy(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def compute_MSE(self, xi_batch, lambd, alpha, l2):
+        diagonal = self.J.data.diagonal(dim1=0, dim2=1)
+        diagonal.fill_(0)
+        J_masked = self.J*self.mask
+        J_x = torch.einsum('ijab,mjb->mia', J_masked, xi_batch)
+        energy_mu = ((xi_batch-lambd*J_x)**2).mean()
+        if l2==True:
+            l2_term = alpha*(self.J ** 2).mean()
+            energy_mu = energy_mu + l2_term
+        return energy_mu
+
+    def compute_crossentropy(self, xi_batch, lambd, alpha, i_rand, r, l2):
         """
         Dispatch to the appropriate forward depending on spin_type and d.
         """
@@ -155,7 +223,7 @@ class TwoBodiesModel(nn.Module):
         else:
             raise ValueError(f"Unknown spin_type: {self.spin_type}")
 
-    def _crossentropy_vector_d1(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
+    def _crossentropy_vector_d1(self, xi_batch, lambd, alpha, i_rand, r, l2):
         """
         Pseudolikelihood for binary spins (d=1).
         Keeps the same logic as the original forward().
@@ -167,38 +235,28 @@ class TwoBodiesModel(nn.Module):
             J_x = torch.einsum('jab,mjb->ma', J_masked[i_rand], xi_batch)  # [M, d]
             y_i_mu = J_x.norm(dim=-1)  # [M]
             x_J_x = torch.einsum('ma,ma->m', xi_batch[:, i_rand], J_x)     # [M]
-
-            if alpha is None:
-                energy_i_mu = -x_J_x + (1.0 / lambd) * torch.log(
+            energy_i_mu = -x_J_x + (1.0 / lambd) * torch.log(
                     self.Z_i_mu_func(y_i_mu, lambd, r) + 1e-9
                 )  # [M]
-            else:
-                energy_i_mu = -x_J_x + (1.0 / lambd) * alpha * y_i_mu**2
-
             if l2 is False:
-                return energy_i_mu.mean(dim=0)
+                return energy_i_mu.mean()
             else:
-                return -x_J_x.mean() + alpha * (J_masked**2).mean()
+                l2_term = alpha*(self.J ** 2).mean()
+                return energy_i_mu.mean() + l2_term
 
         else:
             # Full product over all sites
             J_x = torch.einsum('ijab,mjb->mia', J_masked, xi_batch)   # [M,N,d]
             y_i_mu = J_x.norm(dim=-1)                                 # [M,N]
             x_J_x = torch.einsum('mia,mia->mi', xi_batch, J_x)        # [M,N]
-
-            if alpha is None:
-                energy_i_mu = -x_J_x + (1.0 / lambd) * torch.log(
-                    self.Z_i_mu_func(y_i_mu, lambd, r) + 1e-9
-                )  # [M,N]
-            else:
-                energy_i_mu = -x_J_x + (1.0 / lambd) * alpha * y_i_mu**2
-
+            energy_i_mu = -x_J_x + (1.0 / lambd) * torch.log(self.Z_i_mu_func(y_i_mu, lambd, r) + 1e-9)  
             energy_i_mu = energy_i_mu.mean(dim=1)  # average over sites
 
             if l2 is False:
-                return energy_i_mu.mean(dim=0)
+                return energy_i_mu.mean()
             else:
-                return -x_J_x.mean() + alpha * (J_masked**2).mean()
+                l2_term = alpha*(self.J ** 2).mean()
+                return energy_i_mu.mean() + l2_term
 
     def _crossentropy_vector_ddim(self, xi_batch, lambd, alpha=None, i_rand=None, r=1, l2=False):
         """
@@ -226,63 +284,43 @@ class TwoBodiesModel(nn.Module):
 
 
         if i_rand is not None:
-            # Local field at site i_rand: u_i^μ = Σ_j J_{ij} y_j^μ
+            # Local field at site i_rand
             # J_masked[i_rand] has shape [N, d, d]; xi_batch: [M, N, d]
             J_x = torch.einsum('jab,mjb->ma', J_masked[i_rand], xi_batch)   # [M, d]
 
             # Spins at site i_rand
             y_i_mu = xi_batch[:, i_rand, :]                                 # [M, d]
 
-            # Norm of the local field ||u_i^μ||
+            # Norm of the local field 
             u_norm = J_x.norm(dim=-1)                                       # [M]
 
-            # Dot product y_i^μ · u_i^μ
+            # Dot product 
             y_dot_u = torch.einsum('ma,ma->m', y_i_mu, J_x)                 # [M]
-
-            if alpha is None:
-                # True vector pseudolikelihood: - y·u + (1/λ) log K_d(λ r ||u||)
-                x_arg = lambd * r * u_norm                                  # [M]
-                K_vals = self._K_d(x_arg)                                   # [M]
-                energy_i_mu = -y_dot_u + (1.0 / lambd) * torch.log(K_vals + 1e-9)
-            else:
-                # Quadratic surrogate: - y·u + (1/λ) α ||u||²
-                energy_i_mu = -y_dot_u + (1.0 / lambd) * alpha * (u_norm ** 2)
+            x_arg = lambd * r * u_norm                                # [M]
+            normalization = LogKd.apply(x_arg, self.d, True)
+            energy_i_mu = -y_dot_u + normalization
 
             if not l2:
                 return energy_i_mu.mean()
             else:
                 l2_term = (J_masked ** 2).mean()
                 return energy_i_mu.mean() + l2_term
-
-        # Local fields for all sites:
-        # J_x[m, i, a] = Σ_j,b J[i,j,a,b] * xi[m,j,b]
-        J_x = torch.einsum('ijab,mjb->mia', J_masked, xi_batch)   # [M, N, d]
-
-        # Norm ||u_i^μ|| for each (μ, i)
-        u_norm = J_x.norm(dim=-1)                                # [M, N]
-
-        # Spins y_i^μ
-        y_i_mu = xi_batch                                        # [M, N, d]
-
-        # Dot products y_i^μ · u_i^μ
-        y_dot_u = torch.einsum('mia,mia->mi', y_i_mu, J_x)       # [M, N]
-
-        if alpha is None:
-            # True vector pseudolikelihood term
-            x_arg = lambd * r * u_norm                           # [M, N]
-            K_vals = self._K_d(x_arg)                            # [M, N]
-            energy_i_mu = -y_dot_u + (1.0 / lambd) * torch.log(K_vals + 1e-9)
         else:
-            # Quadratic surrogate
-            energy_i_mu = -y_dot_u + (1.0 / lambd) * alpha * (u_norm ** 2)
-
-        # Average over sites i, then over patterns μ
-        energy_i_mu = energy_i_mu.mean(dim=1)                    # [M]
-        if not l2:
-            return energy_i_mu.mean()
-        else:
-            l2_term = (J_masked.data ** 2).mean()
-            return energy_i_mu.mean() + l2_term
+            # Local fields for all sites:
+            J_x = torch.einsum('ijab,mjb->mia', J_masked, xi_batch)   # [M, N, d]
+            u_norm = J_x.norm(dim=-1)                                # [M, N]
+            y_i_mu = xi_batch                                        # [M, N, d]
+            y_dot_u = torch.einsum('mia,mia->mi', y_i_mu, J_x)       # [M, N]
+            x_arg = lambd * r * u_norm                                # [M]
+            normalization = LogKd.apply(x_arg, self.d, True)
+            energy_i_mu = -y_dot_u + normalization
+            # Average over sites i, then over patterns mu
+            energy_i_mu = energy_i_mu.mean(dim=1)                    # [M]
+            if not l2:
+                return energy_i_mu.mean()
+            else:
+                l2_term = (self.J ** 2).mean()
+                return energy_i_mu.mean() + l2_term
 
     def _crossentropy_continuous(self, xi_batch, lambd, i_rand=None, r=1, l2=False):
         """
@@ -313,38 +351,26 @@ class TwoBodiesModel(nn.Module):
         J_masked = self.J * self.mask  # Apply mask to J
 
         if i_rand is not None:
-            # Local field at site i_rand: u_i^μ = Σ_j J_{i_rand,j} y_j^μ
+            # Local field at site i_rand
             # J_masked[i_rand]: [N, d, d]; xi_batch: [M, N, d]
             J_x = torch.einsum('jab,mjb->ma', J_masked[i_rand], xi_batch)  # [M, d]
 
             # Data at site i_rand
             y_i_mu = xi_batch[:, i_rand, :]                                # [M, d]
 
-            # y · u and ||u||^2
             y_dot_u   = (y_i_mu * J_x).sum(dim=-1)                         # [M]
             u_norm_sq = (J_x ** 2).sum(dim=-1)                             # [M]
-
-            # ℓ_i^μ = - y·u + (λ / (2γ)) ||u||^2  (up to constants in λ,γ,d)
             energy_i_mu = -y_dot_u + (lambd / (2.0 * gamma)) * u_norm_sq   # [M]
-
             loss = energy_i_mu.mean()                                      # scalar
 
         else:
-            # Local fields u_i^μ for all sites:
-            # J_x[m, i, a] = Σ_j,b J[i,j,a,b] * xi[m,j,b]
             J_x = torch.einsum('ijab,mjb->mia', J_masked, xi_batch)        # [M, N, d]
-
             y_i_mu   = xi_batch                                           # [M, N, d]
             y_dot_u  = (y_i_mu * J_x).sum(dim=-1)                         # [M, N]
             u_norm_sq = (J_x ** 2).sum(dim=-1)                            # [M, N]
-
-            # ℓ_i^μ = - y·u + (λ / (2γ)) ||u||^2
             energy_i_mu = -y_dot_u + (lambd / (2.0 * gamma)) * u_norm_sq  # [M, N]
-
             # Average over sites and patterns
             loss = energy_i_mu.mean()                                     # scalar
-
-        # Optional L2 penalty on J
         if l2:
             l2_term = (J_masked ** 2).mean()
             loss = loss + l2_term

@@ -110,10 +110,6 @@ def start_overlap(
 
     return init_vectors
 
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
-
 
 def basins_of_attraction_inp_vectors(
     init_overlaps_array,
@@ -196,7 +192,8 @@ def compute_validation_overlap(model, dataloader, device, init_overlap, n):
                 overlaps[:,i_n] = overlap(x_new, inp_data)
 
             final_overlaps = overlaps[:, -1]
-            max_input_overlap = torch.max(overlaps, dim=-1)[0]
+            
+            max_input_overlap = torch.max(torch.nan_to_num(overlaps, -2.), dim=-1)[0]
 
             # Compute validation loss
             vloss = final_overlaps.mean().cpu().numpy()

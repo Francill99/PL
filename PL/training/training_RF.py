@@ -13,9 +13,9 @@ import gc
 import torch
 
 from PL.model.model import TwoBodiesModel
-from PL.dataset.dataset import RandomFeaturesDataset, GeneralDataset
-from PL.utils.saving import init_training_h5, save_training
-from PL.utils.functions import compute_asymmetry, compute_validation_overlap
+from PL.PL.dataset.random_features import RandomFeaturesDataset, GeneralDataset
+from PL.utils.saving import init_training_h5, save_training, load_training
+from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
 
 METRIC_NAMES = [
     "epoch",
@@ -51,9 +51,7 @@ def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda
     # Return the dataset and model
     return dataset, model, optimizer
 
-
-
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save):
+def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save, l2, alpha, loss_type):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
@@ -63,9 +61,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
-
-
-    # IMPORTANT: change init_training_h5 to also store optimizer (see below)
     init_training_h5(h5_path, model, optimizer)
     next_save_idx = 1  # 0 is untrained
 
@@ -79,10 +74,8 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         for batch_element in dataloader:
             counter += 1
             inp_data = batch_element.to(device)
-
             # Compute loss (now via compute_crossentropy)
-            loss = model.compute_crossentropy(inp_data, lambd=l)
-
+            loss = model.loss(inp_data, lambd=l, loss_type=loss_type, l2=l2, alpha=alpha)
             # Check for valid loss values (no NaN or Inf)
             if torch.isfinite(loss):
                 optimizer.zero_grad()
@@ -224,7 +217,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             save_idx=next_save_idx,
         )
 
-def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, valid_every, max_grad, P_generalization):
+def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_PATH, epochs, learning_rate, valid_every, max_grad, P_generalization, loss_type):
     P = int(alpha_P * N)
     D = int(alpha_D * N)
     print("P={}, D={}, L={}, lambda={}".format(P, D, L, l))
@@ -266,7 +259,7 @@ def main(N, alpha_P, alpha_D, l, L, d, spin_type, init_overlap, n, device, data_
     train_model(
         model, dataloader, dataloader_f,dataloader_generalization, epochs, 
         learning_rate, max_grad, device, data_PATH, init_overlap, 
-        n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save,
+        n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save, loss_type
     )
 
 if __name__ == "__main__":
@@ -289,8 +282,9 @@ if __name__ == "__main__":
     parser.add_argument("--valid_every", type=int, default=10)
     parser.add_argument("--P_generalization", type=int, default=1000)
     parser.add_argument("--L", type=int, default=3)
+    parser.add_argument("--loss_type", type=str, default="CE")
 
     args = parser.parse_args()
 
     # Run the main function with the parsed arguments
-    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.spin_type, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization)
+    main(args.N, args.alpha_P, args.alpha_D, args.l, args.L, args.d, args.on_sphere, args.init_overlap, args.n, args.device, args.data_PATH, args.epochs, args.learning_rate, args.max_grad, args.valid_every, args.P_generalization, args.loss_type)

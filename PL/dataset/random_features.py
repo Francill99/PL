@@ -179,6 +179,10 @@ class RandomFeaturesDataset(BasicDataset):
     
 
 
+    def normalize(self, x):
+        # Normalize each d-dimensional vector in x along the last dimension
+        norms = x.norm(dim=-1, keepdim=True)+1e-9
+        return  x / norms
 
 
 
