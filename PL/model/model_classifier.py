@@ -16,16 +16,16 @@ class Classifier(nn.Module):
         super(Classifier, self).__init__()
         self.N = N
         self.d = d
+        self.sqrt_d = torch.sqrt(torch.tensor(d))
         self.gamma = gamma
         self.l = l
         self.device = device
         self.spin_type = spin_type  # NEW
 
-        self.norm0 = downf
+        self.norm0 = downf*math.sqrt(d)
         J_ = torch.randn(N, d, d)
         norm_ = torch.norm(J_)
         self.J0 = J_*self.norm0/(norm_)
-        
         self.J = nn.Parameter(self.J0)
 
     def normalize_J(self):
@@ -164,6 +164,7 @@ class Classifier(nn.Module):
         # Local fields for all sites:
         J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)   # [M, N, d]
         u_norm = J_x.norm(dim=-1)                                # [M, N]
+        #print("u_norm/d", u_norm.mean()/self.d)
         y_dot_u = torch.einsum('ma,ma->m', y_batch, J_x)       # [M, N]
         x_arg = lambd * r * u_norm                                # [M]
         normalization = LogKd.apply(x_arg, self.d, True)

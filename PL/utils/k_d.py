@@ -2,13 +2,11 @@ import torch, math
 
 _LOG_2PI = math.log(2.0 * math.pi)
 _LOG_PI  = math.log(math.pi)
+_LOG_2   = math.log(2.0)
 
-
-def _log_surface_area_sphere(d: int, device, dtype) -> torch.Tensor:
-    # log |S^{d-1}| = log(2) + (d/2) log(pi) - lgamma(d/2)
+def _log_surface_area_sphere(d: int, device, dtype):
     dh = torch.tensor(0.5 * d, device=device, dtype=dtype)
-    return math.log(2.0) + 0.5 * d * _LOG_PI - torch.lgamma(dh)
-
+    return _LOG_2 + 0.5 * d * _LOG_PI - torch.lgamma(dh)
 
 def logK_d2(x: torch.Tensor) -> torch.Tensor:
     # x >= 0
@@ -53,51 +51,37 @@ def A_d_highd(x: torch.Tensor, d: int, eps: float = 1e-12, x_small: float = 1e-3
     return A
 
 def logK_d_highd(x: torch.Tensor, d: int, eps: float = 1e-12, x_small: float = 1e-3) -> torch.Tensor:
-    """
-    High-d (large nu) approximation of log K_d(x), with a small-x series patch:
-        log K_d(x) ~ log|S^{d-1}| + x^2/(2d)
-
-    Args:
-        x: tensor >=0
-        d: dimension (>1)
-        eps: clamp for log/div
-        x_small: threshold for small-x patch
-
-    Returns:
-        logK tensor same shape as x
-    """
     d = int(d)
     nu = 0.5 * d - 1.0
-    nu_val = max(nu, 1e-6)
-    nu_t = torch.tensor(nu_val, device=x.device, dtype=x.dtype)
+    nu_t = torch.tensor(max(nu, 1e-6), device=x.device, dtype=x.dtype)
 
-    #x = x.clamp_min(0.0)
+    # x should be >= 0 by construction
+    x = x.clamp_min(0.0)
     #small = x < x_small
 
-    # --- asymptotic branch ---
-    z = x.abs() / nu_t
-    s = torch.sqrt(1.0 + z * z)  # sqrt(1+z^2)
+    # z = x/nu
+    z = x / nu_t
+    s = torch.sqrt(1.0 + z * z)
 
-    # eta(z) = s + log( z / (1+s) )
-    # stabilize: clamp z away from 0
-    # z_safe = z.clamp_min(eps)
-    # denom = (1.0 + s).clamp_min(1.0 + eps)
-    eta = s + torch.log(z / (1+s))
+    # eta = s + log( z/(1+s) )
+    z_safe = z.clamp_min(eps)
+    eta = s + torch.log(z_safe / (1.0 + s))
 
-    # log I_nu(nu z) ≈ -0.5 log(2πν) - 0.25 log(1+z^2) + ν eta
-    logI = (-0.5 * torch.log(torch.tensor(2.0 * math.pi, device=x.device, dtype=x.dtype) * nu_t)
+    # log I_nu(nu z)
+    two_pi = torch.tensor(2.0 * math.pi, device=x.device, dtype=x.dtype)
+    logI = (-0.5 * torch.log(two_pi * nu_t)
             -0.25 * torch.log(1.0 + z * z)
             + nu_t * eta)
 
     # log K_d(x) = (d/2) log(2π) + logI - ν log x
-    #x_safe = x.clamp_min(eps)
-    logK_as = 0.5 * d * _LOG_2PI + logI - nu_t * torch.log(x.abs())
+    x_safe = x.clamp_min(eps)
+    logK_as = 0.5 * d * _LOG_2PI + logI - nu_t * torch.log(x_safe)
 
-    # --- small-x patch ---
-    # logS = _log_surface_area_sphere(d, x.device, x.dtype)
-    # logK_small = logS + (x * x) / (2.0 * float(d))
+    # small-x patch: logK ~ log|S^{d-1}| + x^2/(2d)
+    logS = _log_surface_area_sphere(d, x.device, x.dtype)
+    logK_small = logS + (x * x) / (2.0 * float(d))
 
-    return logK_as
+    return logK_as #torch.where(small, logK_small, logK_as)
 
 def _J_half_pair(x: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
     """

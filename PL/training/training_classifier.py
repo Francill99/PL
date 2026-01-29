@@ -93,7 +93,7 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
                 # optimizer step
                 optimizer.step()
                 with torch.no_grad():
-                    if fixed_norm==True:
+                    if fixed_norm==True: 
                         model.normalize_J()
                     train_loss_t += loss.detach()
             
@@ -111,8 +111,10 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
         # Validation and model saving
         if epoch % valid_every == 0 and epoch > 0:
             # Average training loss
+            
             train_loss = (train_loss_t / counter).item()
             counter_acc = 0
+            train_acc = 0
             for batch_element in dataloader:
                 counter_acc += 1
                 xi, y = batch_element
@@ -122,7 +124,8 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
                 accuracy  =  overlap(y, y_pred).mean()
                 train_acc += accuracy.item()
             train_acc = train_acc / max(counter_acc, 1)
-            
+
+            #print("U norm/d", torch.norm(torch.einsum("jab,mjb->ma", model.J, xi),dim=-1).mean().item()/xi.shape[-1])
 
             R = (torch.einsum("iab,iab->", dataset.T.to(device), model.J) / (dataset.T.to(device).norm() * model.J.norm())).cpu().item()
 
@@ -169,6 +172,9 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
     norm_J = torch.norm(model.J, dim=1).cpu().mean().item()
     diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
+    if valid_every > epochs:
+        train_loss = -1
+        train_acc =  -1
     # Append to history used for h5 saving
     history["epoch"].append(epoch)
     history["norm_J"].append(norm_J)
