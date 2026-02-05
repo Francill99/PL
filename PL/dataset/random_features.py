@@ -189,13 +189,13 @@ class RandomFeaturesDataset(BasicDataset):
 class GeneralDataset(Dataset):
     def __init__(self, D, f):
         self.D = D
-        self.f = data
+        self.f = f
 
     def __len__(self):
         return self.D
 
     def __getitem__(self, index):
-        return self.data[index]
+        return self.f[index]
     
 
 
@@ -353,7 +353,48 @@ class RandomDatasetPowerLaw(Dataset):
             c = c.masked_fill(~mask, 0.0)
         xi_new = torch.einsum('pk,kid->pid', c, self.f)
         xi_new = self._l2_normalise(xi_new) if (self.spin_type=="vector") else xi_new
-        return xi_new.squeeze()
+        return xi_new
+    
+    def get_generalization_selected_features(self, P_hat, feature_range, L=None):
+        # c stays 'binary' or 'gaussian', independent of spin_type
+        if self.coefficients == "binary":
+            c = torch.randint(0, 2, (P_hat, self.D)).float() * 2 - 1
+        elif self.coefficients == "gaussian":
+            c = torch.randn(P_hat, self.D)
+        else:
+            raise ValueError("coefficients must be 'binary' or 'gaussian'")
+
+        c = c / math.sqrt(self.D)
+
+        # Select only the features specified in feature_range
+        c = c[:, feature_range]  # Select the columns corresponding to feature_range
+
+        # Same sparsification logic as in RF, applied only to the selected features
+        indices_to_zero = torch.rand(P_hat, len(feature_range))
+        indices_to_zero = indices_to_zero.argsort(dim=1)[:, : len(feature_range) - self.L]
+        c = c.scatter(1, indices_to_zero, 0)
+
+        # Ensure that the tensor `self.f` is indexed correctly and matches dimensions
+        # Select only the corresponding features from self.f (shape: self.D, self.N, self.d)
+        selected_f = self.f[feature_range, :, :]  # Select only the relevant features from self.f
+
+        # Build new patterns from selected features
+        # c has shape (P_hat, len(feature_range))
+        # selected_f has shape (len(feature_range), self.N, self.d)
+        self.xi_new = torch.einsum('pk,knd->pnd', c, selected_f)
+
+        # Fill zeros with Gaussian noise
+        mask = self.xi_new == 0
+        filler = torch.randn_like(self.xi_new) * self.sigma
+        self.xi_new = torch.where(mask, filler, self.xi_new)
+
+        # Vectorial case: normalize -> for d=1 gives ±1 (binary)
+        if self.spin_type == "vector":
+            self.xi_new = self._l2_normalise(self.xi_new)
+
+        return self.xi_new
+
+
 
     def _l2_normalise(self, x):
         """Normalise along last dimension to unit L2 norm (handles broadcasting)."""
@@ -369,10 +410,7 @@ class RandomDatasetPowerLaw(Dataset):
         return self.P
 
     def __getitem__(self, idx):
-        sample = {"state": self.xi[idx], "weights": self.sample_weights[idx].unsqueeze(0)}
-        if self.labels is not None:
-            sample["label"] = self.labels[idx]
-        return sample
+        return self.xi[idx]
 
     # Convenience helpers
     def get_num_visibles(self):

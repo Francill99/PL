@@ -5,7 +5,7 @@ import torch.nn as nn
 from PL.utils.k_d import LogKd
 
 class TwoBodiesModel(nn.Module):
-    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None):
+    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None, downf=1.):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
@@ -23,7 +23,11 @@ class TwoBodiesModel(nn.Module):
         self.spin_type = spin_type
         self.custom_mask = custom_mask
 
-        self.J = nn.Parameter(torch.randn(N, N, d, d, device=device))  # Interaction tensor
+        self.norm0 = downf*math.sqrt(d)
+        J_ = torch.randn(N, N, d, d)
+        norm_ = torch.norm(J_)
+        self.J0 = J_*self.norm0/(norm_)
+        self.J = nn.Parameter(self.J0.to(device))
 
         if self.custom_mask is not None:
             if custom_mask.shape != (N, N):
@@ -37,10 +41,10 @@ class TwoBodiesModel(nn.Module):
 
         self.J.data *= self.mask  # Apply mask to J
 
-
     def normalize_J(self):
+        norm = torch.norm(self.J.data)
         with torch.no_grad():
-            self.J.data *= torch.sqrt(torch.tensor(1/(self.N*self.d)))
+            self.J.data *= self.norm0/norm
 
     def symmetrize_J(self):
         with torch.no_grad():

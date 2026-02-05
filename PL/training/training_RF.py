@@ -61,7 +61,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
-    init_training_h5(h5_path, model, optimizer)
+    init_training_h5(h5_path, model, METRIC_NAMES, optimizer)
     next_save_idx = 1  # 0 is untrained
 
     # Training loop
@@ -69,6 +69,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         model.train()
         train_loss = 0.0
         counter = 0
+        train_loss_t = torch.zeros((), device=device)
 
         # Training batch-wise
         for batch_element in dataloader:
@@ -87,7 +88,8 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                 # optimizer step
                 optimizer.step()
 
-                train_loss += loss.item()
+                with torch.no_grad():
+                    train_loss_t += loss.detach()
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
                 with torch.no_grad():
@@ -97,12 +99,11 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                 for pg in optimizer.param_groups:
                     pg["lr"] = learning_rate
 
-        # Average training loss
-        train_loss = train_loss / max(counter, 1)
         model.eval()
 
         # Validation and model saving
         if epoch % valid_every == 0 and epoch > 0:
+            train_loss = (train_loss_t / counter).item()
             vali_loss, vali_loss_max = compute_validation_overlap(
                 model=model, dataloader=dataloader, device=device,
                 init_overlap=init_overlap, n=n,
