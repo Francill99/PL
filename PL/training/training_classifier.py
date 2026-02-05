@@ -136,7 +136,7 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
 
             # Compute model parameters for logging
             J = model.J.squeeze().cpu().detach().numpy()
-            norm_J = torch.norm(model.J).item()
+            norm_J = (torch.norm(model.J)/torch.sqrt(torch.tensor(model.J.shape[-1]))).cpu().mean().detach().numpy()
             diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
             if verbose == True:
@@ -169,7 +169,7 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
     R = (torch.einsum("iab,iab->", dataset.T.to(device), model.J) / (dataset.T.to(device).norm() * model.J.norm())).cpu().item()
     # Compute model parameters for logging
     J = model.J.squeeze().cpu().detach().numpy()
-    norm_J = torch.norm(model.J, dim=1).cpu().mean().item()
+    norm_J = (torch.norm(model.J)/torch.sqrt(torch.tensor(model.J.shape[-1]))).cpu().mean().detach().numpy()
     diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
     if valid_every > epochs:
