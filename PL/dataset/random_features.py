@@ -310,6 +310,7 @@ class RandomDatasetPowerLaw(Dataset):
 
         self.xi = torch.einsum('pk,kid->pid', c, f)
         self.xi = self._l2_normalise(self.xi) if (self.spin_type=="vector") else self.xi
+        self.c = c
 
     def _make_teacher_labels(self, teacher_seed=None):
         """Generate C random teacher weight vectors and assign labels by argmax."""
@@ -331,26 +332,34 @@ class RandomDatasetPowerLaw(Dataset):
         if L > self.D:
             raise ValueError("L must be ≤ D")
         if self.coefficients == "binary":
-            c = torch.randint(0, 2, (P_hat, self.D), dtype=torch.float32) * 2 - 1
+            c = torch.randint(0, 2, (self.P, self.D), dtype=torch.float32) * 2 - 1
         elif self.coefficients == "gaussian":
-            c = torch.randn(P_hat, self.D, dtype=torch.float32)
-        c = c / math.sqrt(self.D)
+            c = torch.randn(self.P, self.D, dtype=torch.float32)
+        else:
+            raise ValueError("coefficients must be 'binary' or 'gaussian'")
+
+        c = c / math.sqrt(self.D)  
+
         if self.variances == "power_law":
             expnt = self.exponent if self.exponent is not None else 1.0
             variances = torch.arange(1 + self.shift, self.D + 1 + self.shift, dtype=torch.float32) ** (-expnt)
-            c *= variances
+            c *= variances 
         elif self.variances == "exponential":
             lam = 10.0 / float(self.D)
             variances = torch.exp(-torch.arange(1, self.D + 1, dtype=torch.float32) * lam)
             c *= variances
-        if self.pick_biased is not None and L < self.D:
+
+        if self.pick_biased is not None and self.L < self.D:
             idx = torch.arange(self.D)
-            bias = (self.D - idx).float().pow(-self.eta)
+            bias = (1+idx).float().pow(-self.eta)
             bias /= bias.sum()
-            keep_idx = torch.stack([torch.multinomial(bias, L, replacement=False) for _ in range(P_hat)])
+            keep_idx = torch.stack([torch.multinomial(bias, self.L, replacement=False) for _ in range(self.P)])
             mask = torch.zeros_like(c).bool()
             mask.scatter_(1, keep_idx, True)
             c = c.masked_fill(~mask, 0.0)
+
+        self.xi_new = torch.einsum('pk,kid->pid', c, self.f)
+        self.xi_new = self._l2_normalise(self.xi_new) if (self.spin_type=="vector") else self.xi_new
         xi_new = torch.einsum('pk,kid->pid', c, self.f)
         xi_new = self._l2_normalise(xi_new) if (self.spin_type=="vector") else xi_new
         return xi_new

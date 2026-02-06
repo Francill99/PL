@@ -1,6 +1,7 @@
 import math
 import torch
 from torch.utils.data import Dataset
+from PL.model.model_classifier import Classifier
 
 class Dataset_Teacher(Dataset):
     """
@@ -82,3 +83,75 @@ class Dataset_Teacher(Dataset):
 
     def __getitem__(self, index: int):
         return self.xi[index], self.y[index]
+
+
+import torch
+
+def error_generalization_dictionary(
+    model: "Classifier",
+    dataset: "Dataset_Teacher",
+    D: int,
+    d: int,
+    test_xi: torch.Tensor,   # shape [P_test, N, d]
+) -> torch.Tensor:
+    """
+    Dictionary-based generalization error:
+    - build a random dictionary of D vectors in R^d with norm sqrt(d)
+    - compute student and teacher labels on test_xi
+    - for each test sample, pick the dictionary atom with max cosine similarity
+    - return a tensor [P_test] with 0 if argmax matches, 1 otherwise
+    """
+    if test_xi.ndim != 3:
+        raise ValueError(f"test_xi must have shape [P_test, N, d], got {tuple(test_xi.shape)}")
+    if test_xi.shape[-1] != d:
+        raise ValueError(f"test_xi last dim must be d={d}, got {test_xi.shape[-1]}")
+    if D <= 0:
+        raise ValueError("D must be > 0")
+
+    device = test_xi.device
+    dtype = test_xi.dtype
+
+    # 1) Generate D random vectors in R^d with norm exactly sqrt(d)
+    dict_vecs = torch.randn(D, d, device=device, dtype=dtype)
+    dict_vecs = dict_vecs / dict_vecs.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    dict_vecs = dict_vecs * (float(d) ** 0.5)  # each row has norm sqrt(d)
+
+    # 2) Student labels y_hat via model.forward
+    model_device = next(model.parameters()).device if any(True for _ in model.parameters()) else device
+    xi_in = test_xi.to(model_device)
+    y_student = model(xi_in)  # expected shape [P_test, d]
+
+    # 3) Teacher labels from dataset.T (same einsum as in forward)
+    T = dataset.T.to(model_device)  # expected shape [N, d, d] (i.e., "jab")
+    u_teacher = torch.einsum("jab,mjb->ma", T, xi_in)
+
+    if getattr(model, "spin_type", None) == "vector":
+        # reuse model's normalization to match its conventions
+        y_teacher = model.normalize_x(u_teacher)
+    elif getattr(model, "spin_type", None) == "continuous":
+        y_teacher = u_teacher.clone()
+    else:
+        raise ValueError(f"Unknown/unsupported model.spin_type={getattr(model,'spin_type',None)}")
+
+    # Move dictionary to model device too (for the matmuls)
+    dict_vecs = dict_vecs.to(model_device)
+
+    # 4) Cosine similarity with all D dictionary vectors
+    # cos(y, v) = (y·v) / (||y|| ||v||)
+    y_student_n = y_student / y_student.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    y_teacher_n = y_teacher / y_teacher.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    dict_n = dict_vecs / dict_vecs.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+    # similarities: [P_test, D]
+    sim_student = y_student_n @ dict_n.T
+    sim_teacher = y_teacher_n @ dict_n.T
+
+    # 5) Argmax over D for each test point
+    arg_student = sim_student.argmax(dim=1)  # [P_test]
+    arg_teacher = sim_teacher.argmax(dim=1)  # [P_test]
+
+    # 6) 0 if same argmax, 1 otherwise
+    err = (arg_student != arg_teacher).to(torch.long)  # [P_test]
+
+    # return on the same device as test_xi (optional; you can drop this if you want model_device)
+    return err.to(device)

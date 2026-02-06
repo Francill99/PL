@@ -76,13 +76,8 @@ class TwoBodiesModel(nn.Module):
                 if self.custom_mask is not None:
                     self.J.data *= self.mask  # Apply custom mask to J
             elif form == "Tensorial":
-                for mu in range(P):
-                    xi_mu = xi[mu].to(self.device)  # Shape: (N, d)
-                    outer_products = torch.einsum('ia,jb->ijab', xi_mu, xi_mu) / N  # (N,N,d,d)
-                    indices = torch.arange(N)
-                    outer_products[indices, indices] = 0
-                    self.J += outer_products
-
+                xi_mu = xi.to(self.device)  # Shape: (N, d)
+                self.J.data = torch.einsum('pia,pjb->ijab', xi_mu, xi_mu) / P  # (N,N,d,d)
                 self.J.data *= self.mask  # Apply mask to J
 
     def Hebb_classifier(self, xi, y, form="Tensorial"):
