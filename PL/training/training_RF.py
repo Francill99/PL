@@ -59,7 +59,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
     if verbose == True:
         print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
-
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
     init_training_h5(h5_path, model, METRIC_NAMES, optimizer)
@@ -94,8 +93,8 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
                 with torch.no_grad():
-                    model.J.data *= 0.1
-                learning_rate *= 0.1
+                    model.J.data *= 0.5
+                learning_rate *= 0.5
                 # update optimizer LR as well
                 for pg in optimizer.param_groups:
                     pg["lr"] = learning_rate
