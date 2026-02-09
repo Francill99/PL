@@ -5,7 +5,7 @@ import torch.nn as nn
 from PL.utils.k_d import LogKd
 
 class TwoBodiesModel(nn.Module):
-    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None, downf=1.):
+    def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector", custom_mask=None, downf=1.):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
@@ -24,7 +24,7 @@ class TwoBodiesModel(nn.Module):
         self.custom_mask = custom_mask
 
         self.norm0 = downf*math.sqrt(d)
-        J_ = torch.randn(N, N, d, d)
+        J_ = torch.randn(N, N, d, d).to(device)
         norm_ = torch.norm(J_)
         self.J0 = J_*self.norm0/(norm_)
         self.J = nn.Parameter(self.J0.to(device))
@@ -35,7 +35,7 @@ class TwoBodiesModel(nn.Module):
             self.mask = custom_mask.to(self.J.device)
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
         else:
-            self.mask = torch.ones(N, N, device=self.J.device)  # Shape [N, N]
+            self.mask = torch.ones(N, N, device=device)  # Shape [N, N]
             self.mask.fill_diagonal_(0)  # Set diagonal to 0
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
 
@@ -78,7 +78,7 @@ class TwoBodiesModel(nn.Module):
             elif form == "Tensorial":
                 xi_mu = xi.to(self.device)  # Shape: (N, d)
                 self.J.data = torch.einsum('pia,pjb->ijab', xi_mu, xi_mu) / P  # (N,N,d,d)
-                self.J.data *= self.mask  # Apply mask to J
+                self.J.data *= self.mask.to(self.J.device)
 
     def Hebb_classifier(self, xi, y, form="Tensorial"):
         """
