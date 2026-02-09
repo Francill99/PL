@@ -332,9 +332,9 @@ class RandomDatasetPowerLaw(Dataset):
         if L > self.D:
             raise ValueError("L must be ≤ D")
         if self.coefficients == "binary":
-            c = torch.randint(0, 2, (self.P, self.D), dtype=torch.float32) * 2 - 1
+            c = torch.randint(0, 2, (P_hat, self.D), dtype=torch.float32) * 2 - 1
         elif self.coefficients == "gaussian":
-            c = torch.randn(self.P, self.D, dtype=torch.float32)
+            c = torch.randn(P_hat, self.D, dtype=torch.float32)
         else:
             raise ValueError("coefficients must be 'binary' or 'gaussian'")
 
@@ -353,7 +353,7 @@ class RandomDatasetPowerLaw(Dataset):
             idx = torch.arange(self.D)
             bias = (1+idx).float().pow(-self.eta)
             bias /= bias.sum()
-            keep_idx = torch.stack([torch.multinomial(bias, self.L, replacement=False) for _ in range(self.P)])
+            keep_idx = torch.stack([torch.multinomial(bias, self.L, replacement=False) for _ in range(P_hat)])
             mask = torch.zeros_like(c).bool()
             mask.scatter_(1, keep_idx, True)
             c = c.masked_fill(~mask, 0.0)

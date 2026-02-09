@@ -34,13 +34,13 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device=None, L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = RandomFeaturesDataset(P, N, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L, D=D)
 
     # Initialize the model
-    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)
-    model.to(device)  # Move the model to the specified device
+    model = TwoBodiesModel(N, d, gamma=gamma, device=device, spin_type=spin_type)
+    #model.to(device)  # Move the model to the specified device
         # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
