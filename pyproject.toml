@@ -1,3 +1,18 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "PL"
+version = "0.1.0"
+description = "Pseudo-likelihood training library"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "torch"]
+authors = [
+  {name="Francesco D'Amico", email="francescoluigidamico@gmail.com"},
+  {name="David Machado Perez"},
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
