@@ -13,7 +13,7 @@ import gc
 import torch
 
 from PL.model.model import TwoBodiesModel
-from PL.PL.dataset.random_features import RandomFeaturesDataset, GeneralDataset
+from PL.dataset.random_features import RandomFeaturesDataset, GeneralDataset
 from PL.utils.saving import init_training_h5, save_training, load_training
 from PL.utils.functions import start_overlap, compute_asymmetry, compute_validation_overlap
 

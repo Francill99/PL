@@ -34,9 +34,9 @@ METRIC_NAMES = [
     "diff_hebb",
 ]
 
-def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector",  device='cuda', gamma=0., init_Hebb=True, downf=1.):
+def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector",  device='cuda', gamma=0., init_Hebb=True, downf=1., seed=444):
     # Initialize the dataset
-    dataset = Dataset_Teacher(P, N, d, seed=444, sigma=0.5, spin_type=spin_type)
+    dataset = Dataset_Teacher(P, N, d, seed=seed, sigma=0.5, spin_type=spin_type)
 
     # Initialize the model
     model = Classifier(N, d, gamma=gamma, spin_type=spin_type, downf=downf)
