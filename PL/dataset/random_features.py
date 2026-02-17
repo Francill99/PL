@@ -190,7 +190,7 @@ class RandomFeaturesDataset(BasicDataset):
 class GeneralDataset(Dataset):
     def __init__(self, D, f):
         self.D = D
-        self.f = data
+        self.data = f
 
     def __len__(self):
         return self.D
