@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: pl-training
+Version: 0.1.1
+Summary: Pseudo-likelihood training library
+Author: David Machado Perez
+Author-email: Francesco D'Amico <francescoluigidamico@gmail.com>
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: torch
+Dynamic: license-file
