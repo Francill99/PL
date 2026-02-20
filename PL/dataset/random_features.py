@@ -400,10 +400,13 @@ class RandomDatasetPowerLaw(Dataset):
 
         return self.xi_new
 
-    def _l2_normalise(self, x):
-        """Normalise along last dimension to unit L2 norm (handles broadcasting)."""
+    def _l2_normalise(self, x: torch.Tensor, eps: float = 0.0) -> torch.Tensor:
+        """Normalise along last dimension to unit L2 norm; for d==1 use sign, with 0 -> +1."""
         if self.d == 1:
-            result = torch.sign(x)
+            if eps == 0.0:
+                return torch.where(x == 0, torch.ones_like(x), torch.sign(x))
+            else:
+                return torch.where(x.abs() <= eps, torch.ones_like(x), torch.sign(x))
         else:
             eps = 1e-8
             norm = torch.norm(x)+eps
