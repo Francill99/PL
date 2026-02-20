@@ -51,17 +51,18 @@ def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda
     # Return the dataset and model
     return dataset, model, optimizer
 
-def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save, l2, alpha, loss_type):
+def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learning_rate, max_grad, device, data_PATH, init_overlap, n, l, optimizer, J2, norm_J2, valid_every, epochs_to_save, model_name_base, save, l2, alpha, loss_type, verbose=True):
 
     # New: metric history for saving to h5
     history = {name: [] for name in METRIC_NAMES}
 
-    print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
+    if verbose == True:
+        print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
 
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
-    init_training_h5(h5_path, model, optimizer)
+    init_training_h5(h5_path, model, METRIC_NAMES, optimizer)
     next_save_idx = 1  # 0 is untrained
 
     # Training loop
@@ -128,9 +129,10 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
             asymmetry = compute_asymmetry(J)
             diff_Hebb = np.linalg.norm(J2 * norm_J / norm_J2 - J) / norm_J
 
-            print(epoch, norm_J, train_loss, learning_rate,
-                  vali_loss, vali_loss_f, vali_loss_gen,
-                  vali_loss_max, vali_loss_f_max, vali_loss_gen_max, x_norm)
+            if verbose == True:
+                print(epoch, norm_J, train_loss, learning_rate,
+                      vali_loss, vali_loss_f, vali_loss_gen,
+                      vali_loss_max, vali_loss_f_max, vali_loss_gen_max, x_norm)
 
             # Append to history used for h5 saving
             history["epoch"].append(epoch)
