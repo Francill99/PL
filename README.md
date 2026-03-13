@@ -1,4 +1,4 @@
-# Library to train, evaluate and study pseudo-likelihood (or cross-entropy) training on two-bodies or linear models
+# Library to train, evaluate and study pseudo-likelihood (or cross-entropy) training on two-bodies and linear classification models
 
 ## Acknowledgment of code usage
 If you use this library for a publication, we would kindly ask you to cite our reference paper
