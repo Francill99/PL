@@ -34,14 +34,33 @@ METRIC_NAMES = [
     "diff_hebb",
 ]
 
-def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector", label_type="vector",  device='cuda', gamma=0., init_Hebb=True, downf=1., seed=444):
+def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector", label_type="vector",  device='cuda', gamma=0., init_Hebb=True, downf=1., seed=444, optimizer_type="SGD"):
     # Initialize the dataset
     dataset = Dataset_Teacher(P, N, d, seed=seed, sigma=0.5, spin_type=spin_type, label_type=label_type)
 
     # Initialize the model
     model = Classifier(N, d, gamma=gamma, spin_type=spin_type, downf=downf)
     model.to(device)  
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    if optimizer_type == "SGD":
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    elif optimizer_type == "Adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=lr,                  # learning rate
+            betas=(0.9, 0.999),         # (beta1, beta2) for momentum / 2nd-moment
+            eps=1e-08,                  # numerical stability term
+            weight_decay=0.0,           # decoupled weight decay 
+        )
+    elif optimizer_type == "AdamW":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,                  # learning rate
+            betas=(0.9, 0.999),         # (beta1, beta2)
+            eps=1e-08,                  # numerical stability term
+            weight_decay=0.0,          # decoupled weight decay 
+        )
+    else: 
+        raise ValueError(f"Unknown optimizer: {optimizer_type}")
 
     # Apply the Hebb rule
     if init_Hebb:
@@ -66,6 +85,8 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
     next_save_idx = 1  # 0 is untrained
     # in case zero training epochs
     epoch=0 
+    train_loss = 0.
+    train_acc = 0.
     # Training loop
     for epoch in range(epochs):
         t0 = time.time()
