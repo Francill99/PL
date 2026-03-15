@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from PL.utils.k_d import LogKd
 
 class Classifier(nn.Module):
-    def __init__(self, N, d, gamma=0., l=1, device=None, downf=1., spin_type: str = "vector"):
+    def __init__(self, N, d, gamma=0., l=1, device=None, downf=1., dtype = torch.float32, spin_type: str = "vector"):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
@@ -23,10 +23,11 @@ class Classifier(nn.Module):
         self.spin_type = spin_type  # NEW
 
         self.norm0 = downf*math.sqrt(d)
-        J_ = torch.randn(N, d, d)
+        J_ = torch.randn(N, d, d, dtype=dtype)
         norm_ = torch.norm(J_)
         self.J0 = J_*self.norm0/(norm_)
         self.J = nn.Parameter(self.J0)
+
 
     def normalize_J(self):
         norm = torch.norm(self.J.data)
@@ -160,8 +161,6 @@ class Classifier(nn.Module):
         Returns:
             Scalar loss (mean over patterns, and over sites when i_rand is None).
         """
-
-        # Local fields for all sites:
         J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)   # [M, N, d]
         u_norm = J_x.norm(dim=-1)                                # [M, N]
         #print("u_norm/d", u_norm.mean()/self.d)

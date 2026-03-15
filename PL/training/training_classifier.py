@@ -40,7 +40,6 @@ def initialize(N=1000, P=400, d=1, lr=0.1, spin_type="vector", label_type="vecto
 
     # Initialize the model
     model = Classifier(N, d, gamma=gamma, spin_type=spin_type, downf=downf)
-    model.to(device)  
     if optimizer_type == "SGD":
         optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     elif optimizer_type == "Adam":
@@ -98,7 +97,7 @@ def train_model(model, fixed_norm, dataset, dataloader, epochs,
         for batch_element in dataloader:
             counter += 1
             xi, y = batch_element
-            xi = xi.to(device, non_blocking=True)
+            xi = xi.to(device, non_blocking=True) 
             y = y.to(device, non_blocking=True)
             # Compute loss (now via compute_crossentropy)
             loss = model.loss(xi, y, lambd=l, loss_type=loss_type, l2=l2)

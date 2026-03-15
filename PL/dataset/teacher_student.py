@@ -9,13 +9,6 @@ class Dataset_Teacher(Dataset):
     Labels are produced as a "single spin" object:
         y_mu,i = g( T_i @ xi_mu,i + noise )
     where g enforces the same nature as xi (vector/continuous).
-
-    Generation of xi is aligned with RandomFeaturesDataset:
-      - base Gaussian xi ~ N(0, sigma^2)
-      - optional Random Features construction xi = sum_k c_{mu,k} f_k
-      - for spin_type="vector" normalize spins on S^{d-1} (d=1 -> ±1)
-      - coefficients ("binary" or "gaussian") independent of spin_type
-      - sparsification via L active features per pattern
     """
 
     def __init__(
@@ -25,7 +18,7 @@ class Dataset_Teacher(Dataset):
         d: int,
         seed: int,
         sigma: float,
-        spin_type: str = "continuous",        # "vector" or "continuous" 
+        spin_type: str = "continuous",   # "vector" or "continuous"
         label_type: str = "continuous",
     ):
         self.P = P
@@ -33,48 +26,72 @@ class Dataset_Teacher(Dataset):
         self.d = d
         self.sigma = sigma
         self.spin_type = spin_type
-        self.label_type = spin_type
+        self.label_type = label_type
+
         torch.manual_seed(seed)
-        # Isotropic: Gaussian then normalized to fixed Frobenius norm.
-        self.T = torch.randn(N, d, d)  #[N,d,d]
+
+        # Teacher
+        self.T = torch.randn(N, d, d)
         teacher_norm2 = float(N * d)
         self.Teacher = self._normalize_frobenius(self.T, target_norm2=teacher_norm2)
-        self.xi = torch.randn(P, N, d) * sigma #[P,N,d]
 
+        # Training data
+        self.xi = torch.randn(P, N, d) * sigma
         if self.spin_type == "vector":
-            self.xi = self.xi*math.sqrt(self.d)/torch.norm(self.xi, dim=-1, keepdim=True)
+            self.xi = self.xi * math.sqrt(self.d) / torch.norm(self.xi, dim=-1, keepdim=True)
 
-        self.y = self._make_labels(self.xi) #[P,d]
+        self.y = self._make_labels(self.xi)
 
     def _make_labels(self, xi: torch.Tensor) -> torch.Tensor:
         """
         xi: [P,N,d]
-        returns y: [P,d] with same "nature" as xi
+        returns y: [P,d]
         """
-        # local linear map per site: h_{p,i,a} = sum_b T_{i,a,b} xi_{p,i,b}
         h = torch.einsum("iab,pib->pa", self.Teacher, xi)
 
-        # enforce same nature as a single spin of xi
         if self.label_type == "vector":
-            # for d=1: this becomes sign(h) (up to numerical eps)
             y = self.normalize(h)
         elif self.label_type == "continuous":
             y = h
         else:
-            raise ValueError("spin_type must be 'vector' or 'continuous'")
+            raise ValueError("label_type must be 'vector' or 'continuous'")
 
         return y
 
+    def generate_test_set(self, P_test: int):
+        """
+        Generate fresh test data from the same teacher.
+
+        Parameters
+        ----------
+        P_test : int
+            Number of test samples.
+        seed : int or None
+            Optional seed for reproducibility.
+
+        Returns
+        -------
+        xi_test : torch.Tensor
+            Shape [P_test, N, d]
+        y_test : torch.Tensor
+            Shape [P_test, d]
+        """
+
+        xi_test = torch.randn(P_test, self.N, self.d) * self.sigma
+
+        if self.spin_type == "vector":
+            xi_test = xi_test * math.sqrt(self.d) / torch.norm(xi_test, dim=-1, keepdim=True)
+
+        y_test = self._make_labels(xi_test)
+        return xi_test, y_test
+
     @staticmethod
     def normalize(x: torch.Tensor) -> torch.Tensor:
-        norms = x.norm(dim=-1,keepdim=True) + 1e-9
+        norms = x.norm(dim=-1, keepdim=True) + 1e-9
         return x / norms
 
     @staticmethod
     def _normalize_frobenius(T: torch.Tensor, target_norm2: float) -> torch.Tensor:
-        """
-        Enforce sum_{i,a,b} T[i,a,b]^2 == target_norm2 exactly.
-        """
         current = (T * T).sum()
         scale = math.sqrt(float(target_norm2) / float(current + 1e-12))
         return T * scale
