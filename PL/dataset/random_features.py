@@ -2,8 +2,6 @@ import math
 import torch
 from torch.utils.data import Dataset
 
-
-
 class BasicDataset(Dataset):
     def __init__(
         self,
