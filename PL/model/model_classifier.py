@@ -1,314 +1,273 @@
 import math
 import torch
-import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
 
 from PL.utils.k_d import LogKd
 
+
 class Classifier(nn.Module):
-    def __init__(self, N, d, gamma=0., l=1, device=None, downf=1., dtype = torch.float32, spin_type: str = "vector"):
+    def __init__(
+        self,
+        N,
+        d,
+        gamma=0.0,
+        l=1,
+        device=None,
+        downf=1.0,
+        dtype=torch.float32,
+        spin_type: str = "vector",
+        label_type: str | None = None,
+        dictionary: torch.Tensor | None = None,
+    ):
         """
-        spin_type:
-            - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
-            - 'continuous' : continuous spins (independent of d)
+        Supervised teacher-student classifier.
+
+        spin_type controls the input distribution used by the dataset:
+            - "vector"      : vector spins, binary if d=1 and spherical if d>1
+            - "continuous"  : unconstrained continuous input spins
+            - "dictionary"  : input spins sampled from an external dictionary
+
+        label_type controls the conditional output space used in the loss:
+            - "vector"      : spherical/binary pseudo-likelihood normalizer
+            - "continuous"  : Gaussian/continuous pseudo-likelihood normalizer
+            - "dictionary"  : finite dictionary normalizer, i.e. logsumexp over atoms
+
+        For backward compatibility, label_type defaults to spin_type when it is not
+        provided. For new dictionary-input experiments it is better to pass
+        label_type explicitly.
         """
         super(Classifier, self).__init__()
-        self.N = N
-        self.d = d
-        self.sqrt_d = torch.sqrt(torch.tensor(d))
+        self.N = int(N)
+        self.d = int(d)
+        self.sqrt_d = torch.sqrt(torch.tensor(self.d, dtype=dtype))
         self.gamma = gamma
         self.l = l
         self.device = device
-        self.spin_type = spin_type  # NEW
+        self.spin_type = spin_type
+        self.label_type = spin_type if label_type is None else label_type
 
-        self.norm0 = downf*math.sqrt(d)
-        J_ = torch.randn(N, d, d, dtype=dtype)
-        norm_ = torch.norm(J_)
-        self.J0 = J_*self.norm0/(norm_)
+        self._validate_types()
+        prepared_dictionary = self._prepare_dictionary(dictionary, dtype=dtype, device=device)
+        if prepared_dictionary is None:
+            self.dictionary = None
+        else:
+            self.register_buffer("dictionary", prepared_dictionary)
+
+        self.norm0 = downf * math.sqrt(self.d)
+        J_ = torch.randn(self.N, self.d, self.d, dtype=dtype, device=device)
+        norm_ = torch.norm(J_).clamp_min(1e-12)
+        self.J0 = J_ * self.norm0 / norm_
         self.J = nn.Parameter(self.J0)
 
+    def _validate_types(self):
+        allowed_spin_types = {"vector", "continuous", "dictionary"}
+        allowed_label_types = {"vector", "continuous", "dictionary"}
+        if self.spin_type not in allowed_spin_types:
+            raise ValueError("spin_type must be 'vector', 'continuous', or 'dictionary'.")
+        if self.label_type not in allowed_label_types:
+            raise ValueError("label_type must be 'vector', 'continuous', or 'dictionary'.")
+        if self.label_type == "dictionary" and self.d <= 1:
+            raise ValueError("label_type='dictionary' is only supported for d > 1.")
+
+    def _prepare_dictionary(self, dictionary, dtype, device):
+        if self.label_type != "dictionary":
+            return None
+        if dictionary is None:
+            raise ValueError(
+                "A dictionary tensor with shape [D, d] must be provided when "
+                "label_type='dictionary'."
+            )
+        if not isinstance(dictionary, torch.Tensor):
+            raise TypeError(f"dictionary must be a torch.Tensor, got {type(dictionary)!r}.")
+        if dictionary.ndim != 2:
+            raise ValueError(f"dictionary must have shape [D, d], got {tuple(dictionary.shape)}.")
+        if dictionary.shape[0] <= 0:
+            raise ValueError("dictionary must contain at least one atom, got D=0.")
+        if dictionary.shape[1] != self.d:
+            raise ValueError(
+                f"dictionary has last dimension {dictionary.shape[1]}, but classifier d={self.d}."
+            )
+        if not dictionary.is_floating_point():
+            raise TypeError(f"dictionary must be a floating point tensor, got dtype={dictionary.dtype}.")
+        return dictionary.detach().clone().to(device=device, dtype=dtype)
 
     def normalize_J(self):
-        norm = torch.norm(self.J.data)
+        norm = torch.norm(self.J.data).clamp_min(1e-12)
         with torch.no_grad():
-            self.J.data *= self.norm0/norm
+            self.J.data *= self.norm0 / norm
+
+    @staticmethod
+    def _normalize_vectors(x, eps: float = 1e-9):
+        norms = x.norm(dim=-1, keepdim=True).clamp_min(eps)
+        return x / norms
 
     def normalize_x(self, x):
-        if self.spin_type=="vector":
+        """Backward-compatible helper used by older code paths."""
+        if self.spin_type == "vector" or self.label_type == "vector":
             with torch.no_grad():
-                norms = x.norm(dim=-1, keepdim=True) + 1e-9
-                x = x / norms
+                x = self._normalize_vectors(x)
         return x
 
     def Hebb(self, xi, y, form="Tensorial"):
         """
         Supervised Hebbian initialization of J using (xi_mu, y_mu).
-    
+
         Args:
             xi: [P, N, d] input patterns
-            y : [P, N, d] labels (same "single-spin nature" as xi)
+            y : [P, d] labels
             form: "Isotropic" or "Tensorial"
-    
-        Builds:
-            Tensorial:  J[i,j,a,b] = (1/N) * sum_mu y[mu,i,a] * xi[mu,j,b]
-            Isotropic:  J[i,j,:,:] = (1/N) * sum_mu <y[mu,i], xi[mu,j]>   (broadcast over a,b)
-    
-        Diagonal J[i,i,:,:] is set to 0 (as in your classic Hebb).
         """
         if form not in ["Isotropic", "Tensorial"]:
             raise ValueError("Form must be either 'Isotropic' or 'Tensorial'")
-    
+
         if xi.ndim != 3 or y.ndim != 2:
-            raise ValueError(f"xi and y must be 3D and 2D tensors. Got xi {xi.shape}, y {y.shape}")
-    
+            raise ValueError(f"xi must be [P,N,d] and y must be [P,d]. Got xi {xi.shape}, y {y.shape}")
+
         P, N, d = xi.shape
         if N != self.N or d != self.d:
             raise ValueError(f"Shape mismatch: xi is {xi.shape} but model expects N={self.N}, d={self.d}")
+        if y.shape != (P, self.d):
+            raise ValueError(f"y must have shape [P,d]=[{P},{self.d}], got {tuple(y.shape)}")
 
-        xi = xi.to(self.device)
-        y = y.to(self.device)
-    
+        xi = xi.to(self.J.device)
+        y = y.to(self.J.device)
+
         with torch.no_grad():
             self.J.zero_()
-    
+
             if form == "Tensorial":
-                # Vectorized over mu: J_ijab = (1/N) sum_mu y_mia * xi_mjb
+                # J[j,a,b] = sum_mu y[mu,a] xi[mu,j,b]
                 self.J.copy_(torch.einsum("pa,pjb->jab", y, xi))
                 self.normalize_J()
-    
+
             else:  # "Isotropic"
-                # s_ij = (1/N) sum_mu dot(y_mi, xi_mj)
-                s = torch.einsum("pia,pja->j", y, xi) / self.N
-                self.J.copy_(s[:, :, None, None])  # broadcast to [N,d,d]
-    
+                # One scalar per input site, broadcast over the d x d block.
+                s = torch.einsum("pa,pja->j", y, xi) / self.N
+                self.J.copy_(s[:, None, None].expand(self.N, self.d, self.d))
+
     def Z_i_mu_func(self, y_i_mu, lambd, r=1):
         if self.d == 1:
-            Z_i_mu = 2 * torch.cosh(lambd * r * y_i_mu)  # [M, N] or [M]
-        else:
-            print("Z_i_mu_func defined only for d=1")
-        return Z_i_mu
-    
-    def loss(self, xi_batch, y_batch, loss_type="CE", lambd=1., r=1, l2=None):
-        if loss_type=="CE":
+            return 2 * torch.cosh(lambd * r * y_i_mu)
+        raise ValueError("Z_i_mu_func is defined only for d=1")
+
+    def loss(self, xi_batch, y_batch, loss_type="CE", lambd=1.0, r=1, l2=None):
+        if loss_type == "CE":
             return self.compute_crossentropy(xi_batch, y_batch, lambd, r, l2)
-        elif loss_type=="MSE":
+        elif loss_type == "MSE":
             return self.compute_MSE(xi_batch, y_batch, lambd, l2)
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 
+    def _maybe_add_l2(self, loss, l2):
+        if l2 is not None and l2 is not False:
+            loss = loss + l2 * (self.J ** 2).mean()
+        return loss
+
     def compute_MSE(self, xi_batch, y_batch, lambd, l2):
-        diagonal = self.J.data.diagonal(dim1=0, dim2=1)
-        diagonal.fill_(0)
-        J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)
-        energy_mu = ((y_batch-lambd*J_x)**2).mean()
-        if l2 is not None:
-            l2_term = l2*(self.J ** 2).mean()
-            energy_mu = energy_mu + l2_term
-        return energy_mu
+        J_x = torch.einsum("jab,mjb->ma", self.J, xi_batch)
+        energy_mu = ((y_batch - lambd * J_x) ** 2).mean()
+        return self._maybe_add_l2(energy_mu, l2)
 
     def compute_crossentropy(self, xi_batch, y_batch, lambd, r, l2):
         """
-        Dispatch to the appropriate forward depending on spin_type and d.
+        Dispatch according to the output label space.
+
+        The input spin_type affects the empirical distribution of xi_batch, but
+        the conditional pseudo-likelihood normalizer is determined by label_type.
+        In particular, dictionary labels use a finite logsumexp normalizer over
+        dictionary atoms before any fallback to the vector/continuous losses.
         """
-        if self.spin_type == "vector":
+        if self.label_type == "dictionary":
+            return self._crossentropy_dictionary(xi_batch, y_batch, lambd, l2)
+
+        if self.label_type == "vector":
             if self.d == 1:
                 return self._crossentropy_vector_d1(xi_batch, y_batch, lambd, r, l2)
-            else:
-                return self._crossentropy_vector_ddim(xi_batch, y_batch, lambd, r, l2)
-        elif self.spin_type == "continuous":
+            return self._crossentropy_vector_ddim(xi_batch, y_batch, lambd, r, l2)
+
+        if self.label_type == "continuous":
             return self._crossentropy_continuous(xi_batch, y_batch, lambd, r, l2)
-        else:
-            raise ValueError(f"Unknown spin_type: {self.spin_type}")
+
+        raise ValueError(f"Unknown label_type: {self.label_type}")
+
+    def _crossentropy_dictionary(self, xi_batch, y_batch, lambd, l2=None):
+        """
+        Pseudo-likelihood for dictionary-valued labels.
+
+        For u = J x and dictionary D = {v_1, ..., v_D}, this implements
+
+            L = - y·u + (1/lambda) log sum_k exp(lambda v_k·u)
+
+        averaged over the batch. Notice that the whole loss is NOT multiplied by
+        lambda; only the finite dictionary normalizer is scaled by 1/lambda, as
+        in the spherical pseudo-likelihood convention used elsewhere in this file.
+        """
+        if self.d <= 1:
+            raise ValueError("Dictionary-label crossentropy is only supported for d > 1.")
+        if self.dictionary is None:
+            raise ValueError("dictionary must be provided for label_type='dictionary'.")
+
+        dictionary = self.dictionary.to(device=xi_batch.device, dtype=xi_batch.dtype)  # [D,d]
+        J = self.J.to(device=xi_batch.device, dtype=xi_batch.dtype)
+
+        u = torch.einsum("jab,mjb->ma", J, xi_batch)  # [M,d]
+        y_dot_u = torch.einsum("ma,ma->m", y_batch, u)  # [M]
+
+        logits = lambd * (u @ dictionary.T)  # [M,D]
+        log_normalization = torch.logsumexp(logits, dim=-1)  # [M]
+
+        loss = (-y_dot_u + (1.0 / lambd) * log_normalization).mean()
+        return self._maybe_add_l2(loss, l2)
 
     def _crossentropy_vector_d1(self, xi_batch, y_batch, lambd, r, l2):
-        """
-        Pseudolikelihood for binary spins (d=1).
-        Keeps the same logic as the original forward().
-        """
-        # Ensure no self-interaction
-        diagonal = self.J.data.diagonal(dim1=0, dim2=1)
-        diagonal.fill_(0)
-        J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)   # [M,N,d]
-        y_i_mu = J_x.norm(dim=-1)                                 # [M,N]
-        x_J_x = torch.einsum('ma,ma->m', y_batch, J_x)        # [M,N]
-        energy_i_mu = -x_J_x + (1.0 / lambd) * torch.log(self.Z_i_mu_func(y_i_mu, lambd, r) + 1e-9)  
-        if l2 is None:
-            return energy_i_mu.mean()
-        else:
-            l2_term = l2*(self.J ** 2).mean()
-            return energy_i_mu.mean() + l2_term
+        """Pseudo-likelihood for binary labels, d=1."""
+        J_x = torch.einsum("jab,mjb->ma", self.J, xi_batch)  # [M,1]
+        y_i_mu = J_x.norm(dim=-1)  # [M]
+        y_dot_u = torch.einsum("ma,ma->m", y_batch, J_x)  # [M]
+        energy_mu = -y_dot_u + (1.0 / lambd) * torch.log(self.Z_i_mu_func(y_i_mu, lambd, r) + 1e-9)
+        return self._maybe_add_l2(energy_mu.mean(), l2)
 
     def _crossentropy_vector_ddim(self, xi_batch, y_batch, lambd, r, l2):
         """
-        Pseudolikelihood for vector spins with fixed norm (d > 1).
+        Pseudo-likelihood for spherical vector labels with d > 1:
 
-        Implements:
-            L_PL = - ⟨ sum_i y_i^μ · u_i^μ - (1/λ) log K_d( λ ||u_i^μ|| ) ⟩_{μ}
-
-        where:
-            y_i^μ = xi_batch[μ, i, :]
-            u_i^μ = (J * xi_batch)_i^μ   (local field, d-dimensional)
-
-        Args:
-            xi_batch: [M, N, d] tensor of patterns (batch of P= M patterns)
-            lambd:    scalar λ
-            alpha:    if not None, replace (1/λ) log K_d(λ||u||) with (1/λ) α ||u||²
-            i_rand:   if not None, compute contribution only for that site i (single-site PL)
-            r:        radius of spins (if they live on a sphere of radius r)
-            l2:       if True, add L2 penalty on J
-
-        Returns:
-            Scalar loss (mean over patterns, and over sites when i_rand is None).
+            L = - y·u + (1/lambda) log K_d(lambda r ||u||)
         """
-        J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)   # [M, N, d]
-        u_norm = J_x.norm(dim=-1)                                # [M, N]
-        #print("u_norm/d", u_norm.mean()/self.d)
-        y_dot_u = torch.einsum('ma,ma->m', y_batch, J_x)       # [M, N]
-        x_arg = lambd * r * u_norm                                # [M]
+        J_x = torch.einsum("jab,mjb->ma", self.J, xi_batch)  # [M,d]
+        u_norm = J_x.norm(dim=-1)  # [M]
+        y_dot_u = torch.einsum("ma,ma->m", y_batch, J_x)  # [M]
+        x_arg = lambd * r * u_norm
         normalization = LogKd.apply(x_arg, self.d, True)
-        energy_i_mu = -y_dot_u + 1/lambd*normalization
-        # Average over sites i, then over patterns mu
-        if l2 is None:
-            return energy_i_mu.mean()
-        else:
-            l2_term = l2*(self.J ** 2).mean()
-            return energy_i_mu.mean() + l2_term
+        energy_mu = -y_dot_u + (1.0 / lambd) * normalization
+        return self._maybe_add_l2(energy_mu.mean(), l2)
 
     def _crossentropy_continuous(self, xi_batch, y_batch, lambd, r=1, l2=None):
-        """
-        Pseudolikelihood for continuous variables with Gaussian regularization.
+        """Pseudo-likelihood for continuous/Gaussian labels."""
+        if self.gamma is None or self.gamma == 0:
+            raise ValueError("gamma must be non-zero for label_type='continuous'.")
 
-        We consider conditionals of the form
-            p(y_i | y_{-i}) ∝ exp( λ y_i · u_i - (γ/2) ||y_i||^2 ),
-        where u_i is the local field. The exact Gaussian normalizer gives a PL loss
-        (up to J–independent constants):
-            ℓ_i^μ = - y_i^μ · u_i^μ + (λ / (2γ)) ||u_i^μ||^2.
+        J_x = torch.einsum("jab,mjb->ma", self.J, xi_batch)  # [M,d]
+        y_dot_u = (y_batch * J_x).sum(dim=-1)  # [M]
+        u_norm_sq = (J_x ** 2).sum(dim=-1)  # [M]
+        energy_mu = -y_dot_u + (lambd / (2.0 * self.gamma)) * u_norm_sq
+        return self._maybe_add_l2(energy_mu.mean(), l2)
 
-        Here we implement:
-            L = ⟨ ℓ_i^μ ⟩_{μ,i} (+ optional L2 penalty)
+    def _nearest_dictionary_elements(self, h):
+        if self.dictionary is None:
+            raise ValueError("dictionary must be provided for label_type='dictionary'.")
+        dictionary = self.dictionary.to(device=h.device, dtype=h.dtype)
+        scores = h @ dictionary.T
+        indices = scores.argmax(dim=-1)
+        return dictionary[indices]
 
-        Args:
-            xi_batch: [M, N, d] tensor of continuous variables.
-            lambd:    scalar λ (float or 0-dim tensor).
-            alpha:    unused here (kept for API compatibility).
-            i_rand:   if not None, use only site i_rand (single-site PL).
-            r:        unused for continuous case (kept for API compatibility).
-            l2:       if True, add an L2 penalty on J.
-
-        Returns:
-            Scalar loss (mean over patterns μ and sites i).
-        """
-        gamma = self.gamma  # you must define this in __init__
-
-        J_x = torch.einsum('jab,mjb->ma', self.J, xi_batch)        # [M, N, d]
-        y_dot_u  = (y_batch * J_x).sum(dim=-1)                         # [M, N]
-        u_norm_sq = (J_x ** 2).sum(dim=-1)                            # [M, N]
-        energy_i_mu = -y_dot_u + (lambd / (2.0 * gamma)) * u_norm_sq  # [M, N]
-        # Average over sites and patterns
-        loss = energy_i_mu.mean()                                     # scalar
-        if l2 is not None:
-            l2_term = l2*(self.J ** 2).mean()
-            loss = loss + l2_term
-        return loss
-    
-    def _bessel_Iv_series(self, x, v: float, n_terms: int = 20):
-        """
-        Compute modified Bessel function I_v(x) via its power series:
-
-            I_v(x) = sum_{k=0}^∞ (1 / (k! Γ(k+v+1))) (x/2)^{2k+v}
-
-        We truncate the sum at n_terms. Implemented with pure torch ops,
-        so it's differentiable by autograd.
-
-        Args:
-            x: tensor (any shape)
-            v: float, order of Bessel
-            n_terms: number of series terms
-
-        Returns:
-            Tensor with same shape as x.
-        """
-        # Work in float64 for numerical stability
-        orig_dtype = x.dtype
-        x64 = x.to(torch.float64)
-
-        # Avoid log(0) issues
-        eps = 1e-12
-        x_clamped = torch.clamp(x64, min=eps)
-
-        # k = 0, 1, ..., n_terms-1, with broadcasting over x
-        # Shape: [n_terms, 1, 1, ..., 1] to broadcast with x
-        k = torch.arange(n_terms, device=x64.device, dtype=x64.dtype)
-        k_shape = (n_terms,) + (1,) * x64.ndim
-        k = k.view(k_shape)
-
-        v_tensor = torch.tensor(v, dtype=x64.dtype, device=x64.device)
-
-        # log((x/2)^(2k+v)) = (2k+v) * log(x/2)
-        log_x_over_2 = torch.log(x_clamped / 2.0)
-        log_x_power = (2.0 * k + v_tensor) * log_x_over_2
-
-        # log(1 / (k! Γ(k+v+1))) = -[log(k!) + log Γ(k+v+1)]
-        log_factorial_k = torch.lgamma(k + 1.0)           # log(k!)
-        log_gamma_kv = torch.lgamma(k + v_tensor + 1.0)   # log Γ(k+v+1)
-        log_coeff = -(log_factorial_k + log_gamma_kv)
-
-        # log term_k = log_coeff + log_x_power
-        log_terms = log_coeff + log_x_power
-
-        terms = torch.exp(log_terms)   # [n_terms, *x.shape]
-        Iv = terms.sum(dim=0)          # sum over k
-
-        # Fix the value at x=0 using known limits:
-        # I_v(0) = 0 for v>0; I_0(0) = 1
-        if v > 0:
-            Iv = torch.where(x64 == 0, torch.zeros_like(Iv), Iv)
-        elif abs(v) < 1e-12:
-            Iv = torch.where(x64 == 0, torch.ones_like(Iv), Iv)
-
-        return Iv.to(orig_dtype)
-
-
-    def _K_d(self, x, d=None):
-        """
-        Compute K_d(x) = (2π)^{d/2} I_{d/2 - 1}(x) / x^{d/2 - 1}
-        using a custom torch implementation of I_v(x).
-
-        Args:
-            x: Tensor, argument of K_d (usually x = λ r ||u|| ≥ 0)
-            d: Optional int; if None, use self.d
-
-        Returns:
-            Tensor with same shape as x with K_d(x).
-        """
-        if d is None:
-            d = self.d
-
-        # order of the modified Bessel function
-        nu = d / 2.0 - 1.0
-
-        # Compute I_nu(x) via power series (autograd-friendly)
-        Iv = self._bessel_Iv_series(x, v=nu, n_terms=20)
-
-        # avoid division by zero at x ~ 0
-        eps = 1e-12
-        x_clamped = torch.clamp(x, min=eps)
-
-        power = d / 2.0 - 1.0
-        prefactor = (2.0 * math.pi) ** (d / 2.0)
-
-        K = prefactor * Iv / (x_clamped ** power)
-        return K
-    
     def forward(self, xi_batch):
         u_pred = torch.einsum("jab,mjb->ma", self.J, xi_batch)
 
-        if self.spin_type == "vector":
-            y_pred = self.normalize_x(u_pred)
-        elif self.spin_type == "continuous":
-            y_pred = u_pred.clone()
+        if self.label_type == "dictionary":
+            return self._nearest_dictionary_elements(u_pred)
+        if self.label_type == "vector":
+            return self._normalize_vectors(u_pred)
+        if self.label_type == "continuous":
+            return u_pred.clone()
 
-        return y_pred
-
-
+        raise ValueError(f"Unknown label_type: {self.label_type}")
