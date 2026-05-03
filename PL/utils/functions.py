@@ -321,3 +321,4 @@ def create_mask_random_graph(N: int, connectivity:float, graph_type: str,
     # Convert adjacency matrix to a torch tensor and expand for dxd blocks
     mask = torch.tensor(adj_matrix, dtype=torch.float32)
     return mask
+

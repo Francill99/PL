@@ -34,13 +34,13 @@ METRIC_NAMES = [
 ]
 
 
-def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device='cuda', L=3, gamma=0., init_Hebb=True):
+def initialize(N=1000, P=400, D=0, d=1, lr=0.1, spin_type="vector", device=None, L=3, gamma=0., init_Hebb=True):
     # Initialize the dataset
     dataset = RandomFeaturesDataset(P, N, d, seed=444, sigma=0.5, spin_type=spin_type, coefficients="binary", L=L, D=D)
 
     # Initialize the model
-    model = TwoBodiesModel(N, d, gamma=gamma, spin_type=spin_type)
-    model.to(device)  # Move the model to the specified device
+    model = TwoBodiesModel(N, d, gamma=gamma, device=device, spin_type=spin_type)
+    #model.to(device)  # Move the model to the specified device
         # create optimizer (vanilla SGD; full-batch equivalence if dataloader is full batch)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
@@ -59,7 +59,6 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
     if verbose == True:
         print("# epoch lambda train_loss learning_rate train_metric features_metric generalization_metric // // // norm_x")
 
-
     # ---- HDF5 file + untrained model (save 0) ----
     h5_path = os.path.join(data_PATH, model_name_base + ".h5")
     init_training_h5(h5_path, model, METRIC_NAMES, optimizer)
@@ -70,6 +69,7 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
         model.train()
         train_loss = 0.0
         counter = 0
+        train_loss_t = torch.zeros((), device=device)
 
         # Training batch-wise
         for batch_element in dataloader:
@@ -88,22 +88,22 @@ def train_model(model, dataloader, dataloader_f, dataloader_gen, epochs, learnin
                 # optimizer step
                 optimizer.step()
 
-                train_loss += loss.item()
+                with torch.no_grad():
+                    train_loss_t += loss.detach()
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
                 with torch.no_grad():
-                    model.J.data *= 0.1
-                learning_rate *= 0.1
+                    model.J.data *= 0.5
+                learning_rate *= 0.5
                 # update optimizer LR as well
                 for pg in optimizer.param_groups:
                     pg["lr"] = learning_rate
 
-        # Average training loss
-        train_loss = train_loss / max(counter, 1)
         model.eval()
 
         # Validation and model saving
         if epoch % valid_every == 0 and epoch > 0:
+            train_loss = (train_loss_t / counter).item()
             vali_loss, vali_loss_max = compute_validation_overlap(
                 model=model, dataloader=dataloader, device=device,
                 init_overlap=init_overlap, n=n,

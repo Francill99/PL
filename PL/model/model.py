@@ -5,7 +5,7 @@ import torch.nn as nn
 from PL.utils.k_d import LogKd
 
 class TwoBodiesModel(nn.Module):
-    def __init__(self, N, d, gamma=0., r=1, device='cuda', spin_type: str = "vector", custom_mask=None):
+    def __init__(self, N, d, gamma=0., r=1, device=None, spin_type: str = "vector", custom_mask=None, downf=1.):
         """
         spin_type:
             - 'vector'     : vector spins (binary if d=1, fixed-norm vector if d>1)
@@ -23,7 +23,11 @@ class TwoBodiesModel(nn.Module):
         self.spin_type = spin_type
         self.custom_mask = custom_mask
 
-        self.J = nn.Parameter(torch.randn(N, N, d, d, device=device))  # Interaction tensor
+        self.norm0 = downf*math.sqrt(d)
+        J_ = torch.randn(N, N, d, d).to(device)
+        norm_ = torch.norm(J_)
+        self.J0 = J_*self.norm0/(norm_)
+        self.J = nn.Parameter(self.J0.to(device))
 
         if self.custom_mask is not None:
             if custom_mask.shape != (N, N):
@@ -31,16 +35,16 @@ class TwoBodiesModel(nn.Module):
             self.mask = custom_mask.to(self.J.device)
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
         else:
-            self.mask = torch.ones(N, N, device=self.J.device)  # Shape [N, N]
+            self.mask = torch.ones(N, N, device=device)  # Shape [N, N]
             self.mask.fill_diagonal_(0)  # Set diagonal to 0
             self.mask = self.mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, d, d)  # Shape [N, N, d, d]
 
         self.J.data *= self.mask  # Apply mask to J
 
-
     def normalize_J(self):
+        norm = torch.norm(self.J.data)
         with torch.no_grad():
-            self.J.data *= torch.sqrt(torch.tensor(1/(self.N*self.d)))
+            self.J.data *= self.norm0/norm
 
     def symmetrize_J(self):
         with torch.no_grad():
@@ -72,9 +76,9 @@ class TwoBodiesModel(nn.Module):
                 if self.custom_mask is not None:
                     self.J.data *= self.mask  # Apply custom mask to J
             elif form == "Tensorial":
-                    outer_product = torch.einsum('mia,mjb->ijab', xi.to(self.device), xi.to(self.device)) / N  # (N,N,d,d)
-                    self.J.data = outer_product
-                    self.J.data *= self.mask  # Apply mask to J
+                xi_mu = xi.to(self.device)  # Shape: (N, d)
+                self.J.data = torch.einsum('pia,pjb->ijab', xi_mu, xi_mu) / P  # (N,N,d,d)
+                self.J.data *= self.mask.to(self.J.device)
 
     def Hebb_classifier(self, xi, y, form="Tensorial"):
         """
