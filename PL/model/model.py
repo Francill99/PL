@@ -296,8 +296,8 @@ class TwoBodiesModel(nn.Module):
             # Dot product 
             y_dot_u = torch.einsum('ma,ma->m', y_i_mu, J_x)                 # [M]
             x_arg = lambd * r * u_norm                                # [M]
-            normalization = LogKd.apply(x_arg, self.d, True)
-            energy_i_mu = -y_dot_u + normalization
+            normalization = LogKd.apply(x_arg, self.d)
+            energy_i_mu = -y_dot_u + (1.0 / lambd) * normalization
 
             if not l2:
                 return energy_i_mu.mean()

@@ -237,7 +237,7 @@ class Classifier(nn.Module):
         u_norm = J_x.norm(dim=-1)  # [M]
         y_dot_u = torch.einsum("ma,ma->m", y_batch, J_x)  # [M]
         x_arg = lambd * r * u_norm
-        normalization = LogKd.apply(x_arg, self.d, True)
+        normalization = LogKd.apply(x_arg, self.d)
         energy_mu = -y_dot_u + (1.0 / lambd) * normalization
         return self._maybe_add_l2(energy_mu.mean(), l2)
 
