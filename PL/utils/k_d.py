@@ -1,184 +1,279 @@
-import torch, math
+import math
+from pathlib import Path
+
+import torch
+
+
+EXACT_D_MAX = 32
 
 _LOG_2PI = math.log(2.0 * math.pi)
-_LOG_PI  = math.log(math.pi)
-_LOG_2   = math.log(2.0)
 
-def _log_surface_area_sphere(d: int, device, dtype):
-    dh = torch.tensor(0.5 * d, device=device, dtype=dtype)
-    return _LOG_2 + 0.5 * d * _LOG_PI - torch.lgamma(dh)
-
-def logK_d2(x: torch.Tensor) -> torch.Tensor:
-    # x >= 0
-    # log I0 = log(i0e) + x
-    return _LOG_2PI + torch.log(torch.special.i0e(x)) + x
-
-def A_d2(x: torch.Tensor) -> torch.Tensor:
-    # A2 = I1/I0 = i1e/i0e (stable)
-    return torch.special.i1e(x) / torch.special.i0e(x)
+_TABLE_CACHE = {}
 
 
-def A_d_highd(x: torch.Tensor, d: int, eps: float = 1e-12, x_small: float = 1e-3) -> torch.Tensor:
+def _table_path() -> Path:
+    return Path(__file__).with_name("kd_lookup_tables.pt")
+
+
+def _load_tables(device, dtype):
     """
-    High-d (large nu) approximation of A_d(x) = d/dx log K_d(x) = I_{nu+1}(x)/I_nu(x),
-    with stability patches.
+    Load lookup table once and cache it on the requested device/dtype.
+    """
+    key = (str(device), dtype)
 
-    Args:
-        x: tensor >=0
-        d: dimension (>1)
-        eps: clamp for divisions/logs
-        x_small: threshold where we use small-x limit A ~ x/d
+    if key in _TABLE_CACHE:
+        return _TABLE_CACHE[key]
 
-    Returns:
-        A tensor same shape as x
+    path = _table_path()
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing lookup table: {path}. "
+            "Generate it once with: python -m PL.utils.build_kd_lookup"
+        )
+
+    payload = torch.load(path, map_location="cpu")
+
+    x_grid = payload["x_grid"].to(device=device, dtype=dtype)
+    logK = payload["logK"].to(device=device, dtype=dtype)
+    A = payload["A"].to(device=device, dtype=dtype)
+
+    x_max = float(payload["x_max"])
+    n_grid = int(payload["n_grid"])
+    dx = x_max / float(n_grid - 1)
+
+    out = {
+        "x_grid": x_grid,
+        "logK": logK,
+        "A": A,
+        "x_max": x_max,
+        "n_grid": n_grid,
+        "dx": dx,
+    }
+
+    _TABLE_CACHE[key] = out
+    return out
+
+
+def _large_x_logK(x: torch.Tensor, d: int) -> torch.Tensor:
+    """
+    Large-x continuation outside the table.
+
+    For x large:
+        K_d(x) ~ exp(x) (2π/x)^((d-1)/2).
+    """
+    x_safe = x.clamp_min(1e-12)
+    m = 0.5 * float(d - 1)
+    return x_safe + m * (_LOG_2PI - torch.log(x_safe))
+
+
+def _large_x_A(x: torch.Tensor, d: int) -> torch.Tensor:
+    """
+    Derivative of the large-x continuation:
+
+        d/dx [x + m(log(2π)-log x)] = 1 - m/x.
+    """
+    x_safe = x.clamp_min(1e-12)
+    m = 0.5 * float(d - 1)
+    return (1.0 - m / x_safe).clamp(min=0.0, max=1.0)
+
+
+def _high_d_logK(x: torch.Tensor, d: int, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Approximation used automatically for d > 32.
     """
     d = int(d)
-    nu = 0.5 * d - 1.0
-    # avoid nu<=0 (d>2 in practice for this approximation, but keep safe)
+    nu = 0.5 * float(d) - 1.0
     nu_t = torch.tensor(max(nu, 1e-6), device=x.device, dtype=x.dtype)
 
-    # x = x.clamp_min(0.0)
-    # # small-x exact limit
-    # small = x < x_small
-
-    z = x / nu_t
-    # A ≈ z/(1+sqrt(1+z^2))
-    s = torch.sqrt(1.0 + z * z)
-    A = z / (1.0 + s + eps)
-
-    # patch for tiny x (prevents any 0/0 and matches exact limit)
-    #A_small = x / float(d)
-    return A
-
-def logK_d_highd(x: torch.Tensor, d: int, eps: float = 1e-12, x_small: float = 1e-3) -> torch.Tensor:
-    d = int(d)
-    nu = 0.5 * d - 1.0
-    nu_t = torch.tensor(max(nu, 1e-6), device=x.device, dtype=x.dtype)
-
-    # x should be >= 0 by construction
     x = x.clamp_min(0.0)
-    #small = x < x_small
+    x_safe = x.clamp_min(eps)
 
-    # z = x/nu
+    z = x_safe / nu_t
+    s = torch.sqrt(1.0 + z * z)
+    eta = s + torch.log(z.clamp_min(eps) / (1.0 + s))
+
+    two_pi = torch.tensor(2.0 * math.pi, device=x.device, dtype=x.dtype)
+
+    logI = (
+        -0.5 * torch.log(two_pi * nu_t)
+        -0.25 * torch.log(1.0 + z * z)
+        + nu_t * eta
+    )
+
+    return 0.5 * float(d) * _LOG_2PI + logI - nu_t * torch.log(x_safe)
+
+
+def _high_d_A(x: torch.Tensor, d: int, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Approximation used automatically for d > 32.
+    """
+    d = int(d)
+    nu = 0.5 * float(d) - 1.0
+    nu_t = torch.tensor(max(nu, 1e-6), device=x.device, dtype=x.dtype)
+
+    x = x.clamp_min(0.0)
     z = x / nu_t
     s = torch.sqrt(1.0 + z * z)
 
-    # eta = s + log( z/(1+s) )
-    z_safe = z.clamp_min(eps)
-    eta = s + torch.log(z_safe / (1.0 + s))
+    return z / (1.0 + s + eps)
 
-    # log I_nu(nu z)
-    two_pi = torch.tensor(2.0 * math.pi, device=x.device, dtype=x.dtype)
-    logI = (-0.5 * torch.log(two_pi * nu_t)
-            -0.25 * torch.log(1.0 + z * z)
-            + nu_t * eta)
 
-    # log K_d(x) = (d/2) log(2π) + logI - ν log x
-    x_safe = x.clamp_min(eps)
-    logK_as = 0.5 * d * _LOG_2PI + logI - nu_t * torch.log(x_safe)
-
-    # small-x patch: logK ~ log|S^{d-1}| + x^2/(2d)
-    logS = _log_surface_area_sphere(d, x.device, x.dtype)
-    logK_small = logS + (x * x) / (2.0 * float(d))
-
-    return logK_as #torch.where(small, logK_small, logK_as)
-
-def _J_half_pair(x: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+def _hermite_forward(x: torch.Tensor, d: int) -> torch.Tensor:
     """
-    Returns (J_{n-1/2}(x), J_{n+1/2}(x)) where J = exp(-x) I.
+    Cubic Hermite interpolation of logK_d(x) using precomputed
+    logK and derivative A.
 
-    d = 2n+1  with n>=1.
+    This gives a smooth function, not piecewise-linear kinks.
     """
-    # protect division; x is >=0 but can hit 0 numerically
-    x = x.clamp_min(1e-12)
+    tables = _load_tables(x.device, x.dtype)
 
-    # s = sqrt(pi/(2x))
-    s = torch.sqrt((math.pi / 2.0) / x)
+    x_max = tables["x_max"]
+    dx = tables["dx"]
+    logK_table = tables["logK"]
+    A_table = tables["A"]
 
-    e2 = torch.exp(-2.0 * x)
-    Jm = s * 0.5 * (1.0 + e2)  # J_{-1/2}
-    Jp = s * 0.5 * (1.0 - e2)  # J_{ 1/2}
+    x_pos = x.clamp_min(0.0)
+    inside = x_pos <= x_max
 
-    # iterate to reach (n-1/2, n+1/2)
-    # after k steps: we have (J_{k-1/2}, J_{k+1/2})
-    a = Jm  # J_{-1/2}
-    b = Jp  # J_{ 1/2}
-    for k in range(0, n):
-        # compute J_{k+3/2} = J_{k-1/2} - (2k+1)/x * J_{k+1/2}
-        c = a - ((2.0 * k + 1.0) / x) * b
-        a, b = b, c
+    x_in = x_pos.clamp(max=x_max)
 
-    # now a = J_{n-1/2}, b = J_{n+1/2}
-    return a, b
+    u = x_in / dx
+    idx = torch.floor(u).to(torch.long)
+    idx = idx.clamp(min=0, max=tables["n_grid"] - 2)
 
-def A_odd_d(x: torch.Tensor, d: int) -> torch.Tensor:
-    assert d % 2 == 1 and d > 1
-    n = (d - 1) // 2  # d=2n+1
-    # small-x limit: A_d(x) ~ x/d
-    x0 = 1e-4
-    small = x < x0
+    t = u - idx.to(x.dtype)
 
-    J_nu, J_nu1 = _J_half_pair(x, n)
-    A = J_nu1 / J_nu
+    y0 = logK_table[d, idx]
+    y1 = logK_table[d, idx + 1]
 
-    return torch.where(small, x / float(d), A)
+    m0 = A_table[d, idx]
+    m1 = A_table[d, idx + 1]
 
-def logK_odd_d(x: torch.Tensor, d: int) -> torch.Tensor:
-    assert d % 2 == 1 and d > 1
-    n  = (d - 1) // 2
-    nu = 0.5 * d - 1.0
+    t2 = t * t
+    t3 = t2 * t
 
-    x0 = 1e-4
-    small = x < x0
+    h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+    h10 = t3 - 2.0 * t2 + t
+    h01 = -2.0 * t3 + 3.0 * t2
+    h11 = t3 - t2
 
-    # exact (via J_nu)
-    J_nu, _ = _J_half_pair(x, n)
-    logI = torch.log(J_nu) + x
-    logK = 0.5 * d * _LOG_2PI + logI - nu * torch.log(x.clamp_min(1e-12))
+    y_interp = h00 * y0 + h10 * dx * m0 + h01 * y1 + h11 * dx * m1
 
-    # small-x expansion: K_d(x) = |S^{d-1}| * (1 + x^2/(2d) + O(x^4))
-    # => logK ~ log|S^{d-1}| + x^2/(2d)
-    logS = _log_surface_area_sphere(d, x.device, x.dtype)
-    logK_small = logS + (x * x) / (2.0 * float(d))
+    y_large = _large_x_logK(x_pos, d)
 
-    return torch.where(small, logK_small, logK)
+    return torch.where(inside, y_interp, y_large)
 
 
-def logK_d_forward_exact(x: torch.Tensor, d: int) -> torch.Tensor:
-    if d == 2:
-        return logK_d2(x)
-    if d % 2 == 1 and d > 1:
-        return logK_odd_d(x, d)
-    raise ValueError("Exact implementation provided only for d=2 and odd d>1 (half-integer case).")
+def _hermite_derivative(x: torch.Tensor, d: int) -> torch.Tensor:
+    """
+    Derivative of the same cubic Hermite interpolant used in forward.
+    This makes backward consistent with the interpolated forward.
+    """
+    tables = _load_tables(x.device, x.dtype)
 
-def A_d_exact(x: torch.Tensor, d: int) -> torch.Tensor:
-    if d == 2:
-        return A_d2(x)
-    if d % 2 == 1 and d > 1:
-        return A_odd_d(x, d)
-    raise ValueError("Exact implementation provided only for d=2 and odd d>1 (half-integer case).")
+    x_max = tables["x_max"]
+    dx = tables["dx"]
+    logK_table = tables["logK"]
+    A_table = tables["A"]
+
+    x_pos = x.clamp_min(0.0)
+    inside = x_pos <= x_max
+
+    x_in = x_pos.clamp(max=x_max)
+
+    u = x_in / dx
+    idx = torch.floor(u).to(torch.long)
+    idx = idx.clamp(min=0, max=tables["n_grid"] - 2)
+
+    t = u - idx.to(x.dtype)
+
+    y0 = logK_table[d, idx]
+    y1 = logK_table[d, idx + 1]
+
+    m0 = A_table[d, idx]
+    m1 = A_table[d, idx + 1]
+
+    t2 = t * t
+
+    dh00 = 6.0 * t2 - 6.0 * t
+    dh10 = 3.0 * t2 - 4.0 * t + 1.0
+    dh01 = -6.0 * t2 + 6.0 * t
+    dh11 = 3.0 * t2 - 2.0 * t
+
+    dy_dt = dh00 * y0 + dh10 * dx * m0 + dh01 * y1 + dh11 * dx * m1
+    dy_dx = dy_dt / dx
+
+    y_large_grad = _large_x_A(x_pos, d)
+
+    return torch.where(inside, dy_dx, y_large_grad)
 
 
-class LogKd(torch.autograd.Function):
+class _LogKdLookup(torch.autograd.Function):
+    """
+    Lookup-table autograd function.
+
+    Fixed behavior:
+        d <= 32 : precomputed lookup table + cubic Hermite interpolation
+        d > 32  : high-d approximation
+
+    No external flag. The cutoff is fixed here.
+    """
+
     @staticmethod
-    def forward(ctx, x, d, high_d=False):
+    def forward(ctx, x: torch.Tensor, d: int):
         d = int(d)
+
+        if d < 1:
+            raise ValueError(f"d must be >= 1, got {d}")
+
+        if not x.is_floating_point():
+            raise TypeError(f"x must be floating point, got dtype={x.dtype}")
+
         ctx.d = d
-        ctx.high_d = bool(high_d)
         ctx.save_for_backward(x)
-        if ((d>1 and d%2==1) and high_d == False) or d==2:
-            return logK_d_forward_exact(x, d)   
-        elif (d>1) and high_d==True:
-            return logK_d_highd(x,d)
-        
+
+        if d <= EXACT_D_MAX:
+            return _hermite_forward(x, d)
+
+        return _high_d_logK(x, d)
 
     @staticmethod
-    def backward(ctx, grad_out):
+    def backward(ctx, grad_out: torch.Tensor):
         (x,) = ctx.saved_tensors
         d = ctx.d
-        high_d = ctx.high_d
-        if (d>1 and d%2==1) or d==2:
-            grad_x = grad_out * A_d_exact(x, d)    
-        elif (d>1) and high_d==True:
-            grad_x = grad_out * A_d_highd(x, d)
-        return grad_x, None, None
+
+        if d <= EXACT_D_MAX:
+            grad_x = grad_out * _hermite_derivative(x, d)
+        else:
+            grad_x = grad_out * _high_d_A(x, d)
+
+        return grad_x, None
+
+
+class LogKd:
+    """
+    Public API.
+
+    Use:
+        LogKd.apply(x_arg, d)
+
+    Do not pass high_d=True/False.
+    """
+
+    @staticmethod
+    def apply(x: torch.Tensor, d: int) -> torch.Tensor:
+        return _LogKdLookup.apply(x, int(d))
+
+
+def logK_d(x: torch.Tensor, d: int) -> torch.Tensor:
+    return LogKd.apply(x, d)
+
+
+def A_d(x: torch.Tensor, d: int) -> torch.Tensor:
+    d = int(d)
+
+    if d <= EXACT_D_MAX:
+        return _hermite_derivative(x, d)
+
+    return _high_d_A(x, d)

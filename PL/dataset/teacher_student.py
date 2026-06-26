@@ -2,6 +2,7 @@ import math
 import torch
 from torch.utils.data import Dataset
 from PL.model.model_classifier import Classifier
+from PL.dataset.dictionary import dictionary_from
 
 class Dataset_Teacher(Dataset):
     """
@@ -19,8 +20,9 @@ class Dataset_Teacher(Dataset):
         d: int,
         seed: int,
         sigma: float,
-        spin_type: str = "continuous",   # "vector" or "continuous"
-        label_type: str = "continuous",
+        spin_type: str = "continuous",   # "vector", "continuous", or "dictionary"
+        label_type: str = "continuous",  # "vector", "continuous", or "dictionary"
+        dictionary: torch.Tensor | None = None,
     ):
         self.P = P
         self.N = N
@@ -28,6 +30,7 @@ class Dataset_Teacher(Dataset):
         self.sigma = sigma
         self.spin_type = spin_type
         self.label_type = label_type
+        self.dictionary = self._prepare_dictionary(dictionary)
 
         torch.manual_seed(seed)
 
@@ -37,27 +40,91 @@ class Dataset_Teacher(Dataset):
         self.Teacher = self._normalize_frobenius(self.T, target_norm2=teacher_norm2)
 
         # Training data
-        self.xi = torch.randn(P, N, d) * sigma
-        if self.spin_type == "vector":
-            self.xi = self.xi * math.sqrt(self.d) / torch.norm(self.xi, dim=-1, keepdim=True)
-
+        self.xi = self._make_inputs(P)
         self.y = self._make_labels(self.xi)
+
+    def _prepare_dictionary(self, dictionary: torch.Tensor | None) -> torch.Tensor | None:
+        """Validate and store an external dictionary when it is requested."""
+        uses_dictionary = self.spin_type == "dictionary" or self.label_type == "dictionary"
+
+        allowed_spin_types = {"vector", "continuous", "dictionary"}
+        allowed_label_types = {"vector", "continuous", "dictionary"}
+        if self.spin_type not in allowed_spin_types:
+            raise ValueError("spin_type must be 'vector', 'continuous', or 'dictionary'")
+        if self.label_type not in allowed_label_types:
+            raise ValueError("label_type must be 'vector', 'continuous', or 'dictionary'")
+
+        if not uses_dictionary:
+            return None
+        if dictionary is None:
+            raise ValueError(
+                "A dictionary tensor with shape [D, d] must be provided when "
+                "spin_type='dictionary' or label_type='dictionary'."
+            )
+        if not isinstance(dictionary, torch.Tensor):
+            raise TypeError(f"dictionary must be a torch.Tensor, got {type(dictionary)!r}.")
+        if dictionary.ndim != 2:
+            raise ValueError(f"dictionary must have shape [D, d], got {tuple(dictionary.shape)}.")
+        if not dictionary.is_floating_point():
+            raise TypeError(f"dictionary must be a floating point tensor, got dtype={dictionary.dtype}.")
+        if dictionary.shape[0] <= 0:
+            raise ValueError("dictionary must contain at least one element, got D=0.")
+        if dictionary.shape[1] != self.d:
+            raise ValueError(
+                f"dictionary has last dimension {dictionary.shape[1]}, but dataset d={self.d}."
+            )
+
+        return dictionary_from(dictionary)
+
+    def _make_inputs(self, P: int) -> torch.Tensor:
+        """Generate input spins according to spin_type."""
+        if self.spin_type == "dictionary":
+            indices = torch.randint(
+                0,
+                self.dictionary.shape[0],
+                (P, self.N),
+                device=self.dictionary.device,
+            )
+            return self.dictionary[indices]
+
+        xi = torch.randn(P, self.N, self.d) * self.sigma
+        if self.spin_type == "vector":
+            xi = xi * math.sqrt(self.d) / torch.norm(xi, dim=-1, keepdim=True)
+        elif self.spin_type == "continuous":
+            pass
+        else:
+            raise ValueError("spin_type must be 'vector', 'continuous', or 'dictionary'")
+
+        return xi
 
     def _make_labels(self, xi: torch.Tensor) -> torch.Tensor:
         """
         xi: [P,N,d]
         returns y: [P,d]
         """
-        h = torch.einsum("iab,pib->pa", self.Teacher, xi)
+        teacher = self.Teacher.to(device=xi.device, dtype=xi.dtype)
+        h = torch.einsum("iab,pib->pa", teacher, xi)
 
         if self.label_type == "vector":
             y = self.normalize(h)
         elif self.label_type == "continuous":
             y = h
+        elif self.label_type == "dictionary":
+            y = self._nearest_dictionary_elements(h)
         else:
-            raise ValueError("label_type must be 'vector' or 'continuous'")
+            raise ValueError("label_type must be 'vector', 'continuous', or 'dictionary'")
 
         return y
+
+    def _nearest_dictionary_elements(self, h: torch.Tensor) -> torch.Tensor:
+        """Map each teacher output to the dictionary atom with largest dot product."""
+        if self.dictionary is None:
+            raise ValueError("dictionary must be provided for label_type='dictionary'.")
+
+        dictionary = self.dictionary.to(device=h.device, dtype=h.dtype)
+        scores = h @ dictionary.T
+        indices = scores.argmax(dim=-1)
+        return dictionary[indices]
 
     def generate_test_set(self, P_test: int):
         """
@@ -78,11 +145,7 @@ class Dataset_Teacher(Dataset):
             Shape [P_test, d]
         """
 
-        xi_test = torch.randn(P_test, self.N, self.d) * self.sigma
-
-        if self.spin_type == "vector":
-            xi_test = xi_test * math.sqrt(self.d) / torch.norm(xi_test, dim=-1, keepdim=True)
-
+        xi_test = self._make_inputs(P_test)
         y_test = self._make_labels(xi_test)
         return xi_test, y_test
 

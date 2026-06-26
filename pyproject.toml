@@ -16,3 +16,6 @@ authors = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+"PL.utils" = ["kd_lookup_tables.pt"]
