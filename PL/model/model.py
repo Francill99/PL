@@ -46,6 +46,38 @@ class TwoBodiesModel(nn.Module):
         with torch.no_grad():
             self.J.data *= self.norm0/norm
 
+    @torch.no_grad()
+    def project_J_gradient_(self, eps: float = 1e-12):
+        """
+        Project grad_J onto the tangent space of the fixed-norm sphere,
+        respecting the interaction mask.
+
+        Constraint:
+            ||J|| = const
+
+        Projection:
+            grad <- grad - [(grad·J)/(J·J)] J
+        """
+        if self.J.grad is None:
+            return
+
+        J = self.J.detach()
+        g = self.J.grad
+
+        # Respect the mask: diagonal / forbidden couplings should not move.
+        if hasattr(self, "mask") and self.mask is not None:
+            g.mul_(self.mask)
+            J = J * self.mask
+
+        denom = torch.sum(J * J).clamp_min(eps)
+        radial_coeff = torch.sum(g * J) / denom
+
+        g.sub_(radial_coeff * J)
+
+        # Make absolutely sure masked entries stay with zero gradient.
+        if hasattr(self, "mask") and self.mask is not None:
+            g.mul_(self.mask)
+
     def symmetrize_J(self):
         with torch.no_grad():
             self.J.data = (self.J.data + self.J.data.transpose(0,1))/2

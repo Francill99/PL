@@ -300,13 +300,14 @@ def train_model(
             loss = model.loss(xi, y, lambd=l, loss_type=loss_type, l2=l2)
 
             if torch.isfinite(loss):
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                
+                if fixed_norm is True:
+                    model.project_J_gradient_()
+                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad)
                 optimizer.step()
-
-                if fixed_norm is True:
-                    model.normalize_J()
             else:
                 print(f"Detected NaN/Inf {model_name_base} epoch {epoch} lr {learning_rate}")
                 with torch.no_grad():

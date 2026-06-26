@@ -96,6 +96,28 @@ class Classifier(nn.Module):
         with torch.no_grad():
             self.J.data *= self.norm0 / norm
 
+    @torch.no_grad()
+    def project_J_gradient_(self, eps: float = 1e-12):
+        """
+        Project grad_J onto the tangent space of the fixed-norm sphere:
+
+            ||J|| = const
+
+        This removes the radial component of the gradient, i.e. the component
+        parallel to J.
+        """
+        if self.J.grad is None:
+            return
+
+        J = self.J.detach()
+        g = self.J.grad
+
+        denom = torch.sum(J * J).clamp_min(eps)
+        radial_coeff = torch.sum(g * J) / denom
+
+        # in-place: g <- g - [(g·J)/(J·J)] J
+        g.sub_(radial_coeff * J)
+
     @staticmethod
     def _normalize_vectors(x, eps: float = 1e-9):
         norms = x.norm(dim=-1, keepdim=True).clamp_min(eps)
