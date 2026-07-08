@@ -120,8 +120,12 @@ class Classifier(nn.Module):
 
     @staticmethod
     def _normalize_vectors(x, eps: float = 1e-9):
-        norms = x.norm(dim=-1, keepdim=True).clamp_min(eps)
-        return x / norms
+        if x.shape[-1] > 1:
+            norms = x.norm(dim=-1, keepdim=True).clamp_min(eps)
+            return x / norms
+        else:
+            return torch.sign(x)
+        
 
     def normalize_x(self, x):
         """Backward-compatible helper used by older code paths."""
