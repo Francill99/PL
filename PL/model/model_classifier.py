@@ -124,7 +124,7 @@ class Classifier(nn.Module):
             norms = x.norm(dim=-1, keepdim=True).clamp_min(eps)
             return x / norms
         else:
-            return torch.sign(x)
+            return torch.where(x >= 0, torch.ones_like(x), -torch.ones_like(x))
         
 
     def normalize_x(self, x):

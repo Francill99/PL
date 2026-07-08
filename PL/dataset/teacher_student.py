@@ -86,15 +86,21 @@ class Dataset_Teacher(Dataset):
                 device=self.dictionary.device,
             )
             return self.dictionary[indices]
-
+    
         xi = torch.randn(P, self.N, self.d) * self.sigma
+    
         if self.spin_type == "vector":
-            xi = xi * math.sqrt(self.d) / torch.norm(xi, dim=-1, keepdim=True)
+            if self.d == 1:
+                # Ising case: avoid xi / |xi|
+                xi = torch.where(xi >= 0, torch.ones_like(xi), -torch.ones_like(xi))
+            else:
+                xi = xi * math.sqrt(self.d) / xi.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    
         elif self.spin_type == "continuous":
             pass
         else:
             raise ValueError("spin_type must be 'vector', 'continuous', or 'dictionary'")
-
+    
         return xi
 
     def _make_labels(self, xi: torch.Tensor) -> torch.Tensor:
