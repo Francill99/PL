@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from PL.model.model_classifier import Classifier
 from PL.dataset.teacher_student import Dataset_Teacher
-from PL.dataset.dictionary import random_dictionary
+from PL.dataset.dictionary import random_dictionary, resolve_dictionary_type
 from PL.utils.saving import init_training_h5, save_training
 from PL.utils.functions import overlap
 
@@ -63,23 +63,41 @@ def build_dictionary_if_needed(
     d: int,
     dictionary_path: str | None,
     dictionary_size: int | None,
-    dictionary_on_the_sphere: bool,
-    dictionary_sigma: float,
-    dictionary_seed: int | None,
+    dictionary_on_the_sphere: bool | None = None,
+    dictionary_sigma: float = 1.0,
+    dictionary_seed: int | None = None,
+    dictionary_type: str | None = "spherical",
 ) -> torch.Tensor | None:
-    """Return a dictionary tensor only when spin_type or label_type requires it."""
+    """
+    Return a dictionary tensor only when an input or output dictionary is needed.
+
+    Generated dictionaries support two distributions:
+      - ``spherical`` (default): unit-norm vectors, preserving previous behavior;
+      - ``gaussian``: independent vectors from N(0, sigma^2 I_d), without any
+        per-vector normalization. With sigma=1 this has identity covariance.
+
+    ``dictionary_on_the_sphere`` is kept only for backward compatibility with
+    older Python calls. When it is not None, it maps True/False to
+    spherical/Gaussian respectively.
+    """
     uses_dictionary = (spin_type == "dictionary") or (label_type == "dictionary")
     if not uses_dictionary:
         return None
 
+    resolved_type = resolve_dictionary_type(
+        dictionary_type,
+        on_the_sphere=dictionary_on_the_sphere,
+    )
+
     if dictionary_path is not None:
+        # External dictionaries are used exactly as stored: no normalization.
         dictionary = load_dictionary_from_path(dictionary_path)
     elif dictionary_size is not None:
         dictionary = random_dictionary(
             dictionary_size,
             d,
             sigma=dictionary_sigma,
-            on_the_sphere=dictionary_on_the_sphere,
+            dictionary_type=resolved_type,
             seed=dictionary_seed,
         )
     else:
@@ -160,15 +178,16 @@ def initialize(
 @torch.no_grad()
 def _dictionary_accuracy_from_field(model, xi, y):
     """
-    Exact dictionary-label accuracy.
+    Exact dictionary-label accuracy using raw, unnormalized prediction scores.
 
     Prediction:
-        argmax_k v_k · u(x), with u(x)=Jx.
-    Target:
-        argmax_k v_k · y.
+        argmax_k u(x) · v_k, with u(x)=Jx.
 
-    This matches the dictionary pseudo-likelihood logits and avoids relying on
-    Euclidean nearest-neighbour distance when the dictionary is not normalized.
+    The target ``y`` is already one dictionary atom. Its index must therefore be
+    recovered by matching it to the stored atoms, not by ``argmax_k y·v_k``.
+    The latter is only safe for equal-norm dictionaries and is wrong in general
+    for Gaussian dictionaries, where another longer atom can have a larger dot
+    product with ``y`` than ``y`` has with itself.
     """
     if getattr(model, "dictionary", None) is None:
         raise ValueError("model.dictionary is required when label_type='dictionary'.")
@@ -176,7 +195,15 @@ def _dictionary_accuracy_from_field(model, xi, y):
     dictionary = model.dictionary.to(device=xi.device, dtype=xi.dtype)
     J = model.J.to(device=xi.device, dtype=xi.dtype)
     u = torch.einsum("jab,mjb->ma", J, xi)
-    target_idx = (y @ dictionary.T).argmax(dim=-1)
+
+    # y is exactly one row of the dictionary. Squared-distance matching recovers
+    # its class independently of dictionary norms.
+    y_sq = (y * y).sum(dim=-1, keepdim=True)
+    d_sq = (dictionary * dictionary).sum(dim=-1).unsqueeze(0)
+    distances_sq = y_sq + d_sq - 2.0 * (y @ dictionary.T)
+    target_idx = distances_sq.argmin(dim=-1)
+
+    # The model prediction remains the required raw-overlap argmax.
     pred_idx = (u @ dictionary.T).argmax(dim=-1)
     return (target_idx == pred_idx).float().mean()
 
@@ -380,7 +407,7 @@ def main(
     loss_type,
     dictionary_path=None,
     dictionary_size=None,
-    dictionary_on_the_sphere=True,
+    dictionary_on_the_sphere=None,
     dictionary_sigma=1.0,
     dictionary_seed=None,
     seed=444,
@@ -393,6 +420,7 @@ def main(
     init_Hebb=True,
     save=False,
     l2=None,
+    dictionary_type=None,
 ):
     P = int(alpha_P * N)
     if batch_size is None:
@@ -407,14 +435,38 @@ def main(
         dictionary_on_the_sphere=dictionary_on_the_sphere,
         dictionary_sigma=dictionary_sigma,
         dictionary_seed=dictionary_seed,
+        dictionary_type=dictionary_type,
     )
     D_dict = None if dictionary is None else dictionary.shape[0]
+    resolved_dictionary_type = resolve_dictionary_type(
+        dictionary_type,
+        on_the_sphere=dictionary_on_the_sphere,
+    )
+    if dictionary is None:
+        dictionary_source = None
+    else:
+        dictionary_source = "external" if dictionary_path is not None else resolved_dictionary_type
 
-    print(f"P={P}, P_test={P_test}, lambda={l}, spin_type={spin_type}, label_type={label_type}, D_dict={D_dict}")
+    print(
+        f"P={P}, P_test={P_test}, lambda={l}, spin_type={spin_type}, "
+        f"label_type={label_type}, D_dict={D_dict}, dictionary_type={dictionary_source}"
+    )
+    if dictionary is not None:
+        mean_norm = dictionary.norm(dim=-1).mean().item()
+        mean_coordinate_variance = dictionary.var(dim=0, unbiased=False).mean().item()
+        print(
+            f"dictionary mean_norm={mean_norm:.6g}, "
+            f"mean_coordinate_variance={mean_coordinate_variance:.6g}"
+        )
+
+    # Keep the historical spherical filename exactly unchanged. Only the new
+    # generated Gaussian case receives an explicit suffix.
     model_name_base = (
         f"classifier_N_{N}_P_{P}_Ptest_{P_test}_l_{l}_d_{d}_epochs_{epochs}_lr_{learning_rate}"
         f"_spin_{spin_type}_label_{label_type}_Ddict_{D_dict}_seed_{seed}"
     )
+    if dictionary is not None and dictionary_path is None and dictionary_source == "gaussian":
+        model_name_base += "_dict_gaussian"
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -511,8 +563,28 @@ if __name__ == "__main__":
 
     parser.add_argument("--dictionary_path", type=str, default=None)
     parser.add_argument("--dictionary_size", type=int, default=None)
-    parser.add_argument("--dictionary_off_sphere", action="store_true")
-    parser.add_argument("--dictionary_sigma", type=float, default=1.0)
+    parser.add_argument(
+        "--dictionary_type",
+        type=str,
+        default="spherical",
+        choices=["spherical", "gaussian"],
+        help=(
+            "Distribution used to generate the dictionary. 'spherical' is the "
+            "backward-compatible default; 'gaussian' draws N(0, sigma^2 I_d) "
+            "vectors without normalization."
+        ),
+    )
+    parser.add_argument(
+        "--dictionary_off_sphere",
+        action="store_true",
+        help="Deprecated alias for --dictionary_type gaussian.",
+    )
+    parser.add_argument(
+        "--dictionary_sigma",
+        type=float,
+        default=1.0,
+        help="Gaussian coordinate standard deviation; sigma=1 gives covariance I_d.",
+    )
     parser.add_argument("--dictionary_seed", type=int, default=None)
 
     parser.add_argument("--seed", type=int, default=444)
@@ -525,6 +597,10 @@ if __name__ == "__main__":
     parser.add_argument("--l2", type=float, default=None)
 
     args = parser.parse_args()
+
+    # Preserve the old flag while making the explicit type the primary API.
+    if args.dictionary_off_sphere:
+        args.dictionary_type = "gaussian"
 
     main(
         N=args.N,
@@ -545,9 +621,10 @@ if __name__ == "__main__":
         test_seed=args.test_seed,
         dictionary_path=args.dictionary_path,
         dictionary_size=args.dictionary_size,
-        dictionary_on_the_sphere=not args.dictionary_off_sphere,
+        dictionary_on_the_sphere=None,
         dictionary_sigma=args.dictionary_sigma,
         dictionary_seed=args.dictionary_seed,
+        dictionary_type=args.dictionary_type,
         seed=args.seed,
         gamma=args.gamma,
         downf=args.downf,
