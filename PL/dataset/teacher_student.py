@@ -123,7 +123,7 @@ class Dataset_Teacher(Dataset):
         return y
 
     def _nearest_dictionary_elements(self, h: torch.Tensor) -> torch.Tensor:
-        """Map each teacher output to the dictionary atom with largest dot product."""
+        """Map each field to argmax_k h·v_k using raw, unnormalized dot products."""
         if self.dictionary is None:
             raise ValueError("dictionary must be provided for label_type='dictionary'.")
 
@@ -177,67 +177,56 @@ def error_generalization_dictionary(
     dataset: "Dataset_Teacher",
     D: int,
     d: int,
-    test_xi: torch.Tensor,   # shape [P_test, N, d]
+    test_xi: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Dictionary-based generalization error:
-    - build a random dictionary of D vectors in R^d with norm sqrt(d)
-    - compute student and teacher labels on test_xi
-    - for each test sample, pick the dictionary atom with max cosine similarity
-    - return a tensor [P_test] with 0 if argmax matches, 1 otherwise
+    Dictionary classification error on a test set.
+
+    Both teacher and student classes are selected with the same raw scores
+
+        k*(h) = argmax_k h · v_k,
+
+    using the dictionary already stored in ``dataset``/``model``. No field or
+    dictionary vector is normalized, so Gaussian and spherical dictionaries are
+    genuinely different.
     """
     if test_xi.ndim != 3:
         raise ValueError(f"test_xi must have shape [P_test, N, d], got {tuple(test_xi.shape)}")
     if test_xi.shape[-1] != d:
         raise ValueError(f"test_xi last dim must be d={d}, got {test_xi.shape[-1]}")
-    if D <= 0:
-        raise ValueError("D must be > 0")
 
-    device = test_xi.device
-    dtype = test_xi.dtype
+    dataset_dictionary = getattr(dataset, "dictionary", None)
+    model_dictionary = getattr(model, "dictionary", None)
+    dictionary = dataset_dictionary if dataset_dictionary is not None else model_dictionary
+    if dictionary is None:
+        raise ValueError("A stored dictionary is required for dictionary generalization error.")
+    if dictionary.ndim != 2 or dictionary.shape[1] != d:
+        raise ValueError(
+            f"dictionary must have shape [D, d] with d={d}, got {tuple(dictionary.shape)}"
+        )
+    if D is not None and int(D) != dictionary.shape[0]:
+        raise ValueError(f"D={D} but the stored dictionary contains {dictionary.shape[0]} atoms.")
 
-    # 1) Generate D random vectors in R^d with norm exactly sqrt(d)
-    dict_vecs = torch.randn(D, d, device=device, dtype=dtype)
-    dict_vecs = dict_vecs / dict_vecs.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-    dict_vecs = dict_vecs * (float(d) ** 0.5)  # each row has norm sqrt(d)
+    parameter = next(model.parameters(), None)
+    model_device = parameter.device if parameter is not None else test_xi.device
+    model_dtype = parameter.dtype if parameter is not None else test_xi.dtype
 
-    # 2) Student labels y_hat via model.forward
-    model_device = next(model.parameters()).device if any(True for _ in model.parameters()) else device
-    xi_in = test_xi.to(model_device)
-    y_student = model(xi_in)  # expected shape [P_test, d]
+    xi = test_xi.to(device=model_device, dtype=model_dtype)
+    dictionary = dictionary.to(device=model_device, dtype=model_dtype)
 
-    # 3) Teacher labels from dataset.T (same einsum as in forward)
-    T = dataset.T.to(model_device)  # expected shape [N, d, d] (i.e., "jab")
-    u_teacher = torch.einsum("jab,mjb->ma", T, xi_in)
+    # Student field u_s = Jx.
+    J = model.J.to(device=model_device, dtype=model_dtype)
+    u_student = torch.einsum("jab,mjb->ma", J, xi)
 
-    if getattr(model, "spin_type", None) == "vector":
-        # reuse model's normalization to match its conventions
-        y_teacher = model.normalize_x(u_teacher)
-    elif getattr(model, "spin_type", None) == "continuous":
-        y_teacher = u_teacher.clone()
-    else:
-        raise ValueError(f"Unknown/unsupported model.spin_type={getattr(model,'spin_type',None)}")
+    # Use the normalized teacher tensor actually used by Dataset_Teacher to
+    # generate labels, rather than the unnormalized temporary tensor self.T.
+    teacher = getattr(dataset, "Teacher", None)
+    if teacher is None:
+        raise ValueError("dataset.Teacher is required to compute teacher labels.")
+    teacher = teacher.to(device=model_device, dtype=model_dtype)
+    u_teacher = torch.einsum("jab,mjb->ma", teacher, xi)
 
-    # Move dictionary to model device too (for the matmuls)
-    dict_vecs = dict_vecs.to(model_device)
-
-    # 4) Cosine similarity with all D dictionary vectors
-    # cos(y, v) = (y·v) / (||y|| ||v||)
-    y_student_n = y_student / y_student.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-    y_teacher_n = y_teacher / y_teacher.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-    dict_n = dict_vecs / dict_vecs.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-
-    # similarities: [P_test, D]
-    sim_student = y_student_n @ dict_n.T
-    sim_teacher = y_teacher_n @ dict_n.T
-
-    # 5) Argmax over D for each test point
-    arg_student = sim_student.argmax(dim=1)  # [P_test]
-    arg_teacher = sim_teacher.argmax(dim=1)  # [P_test]
-
-    # 6) 0 if same argmax, 1 otherwise
-    err = (arg_student != arg_teacher).to(torch.long)  # [P_test]
-
-    # return on the same device as test_xi (optional; you can drop this if you want model_device)
-    return err.to(device)
+    student_idx = (u_student @ dictionary.T).argmax(dim=-1)
+    teacher_idx = (u_teacher @ dictionary.T).argmax(dim=-1)
+    return (student_idx != teacher_idx).to(torch.long).to(test_xi.device)
 
