@@ -11,7 +11,11 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from PL.model.model_classifier import Classifier
 from PL.dataset.teacher_student import Dataset_Teacher
-from PL.dataset.dictionary import random_dictionary, resolve_dictionary_type
+from PL.dataset.dictionary import (
+    power_law_covariance_eigenvalues,
+    random_dictionary,
+    resolve_dictionary_type,
+)
 from PL.utils.saving import init_training_h5, save_training
 from PL.utils.functions import overlap
 
@@ -67,14 +71,16 @@ def build_dictionary_if_needed(
     dictionary_sigma: float = 1.0,
     dictionary_seed: int | None = None,
     dictionary_type: str | None = "spherical",
+    dictionary_eta: float = 0.0,
 ) -> torch.Tensor | None:
     """
     Return a dictionary tensor only when an input or output dictionary is needed.
 
     Generated dictionaries support two distributions:
       - ``spherical`` (default): unit-norm vectors, preserving previous behavior;
-      - ``gaussian``: independent vectors from N(0, sigma^2 I_d), without any
-        per-vector normalization. With sigma=1 this has identity covariance.
+      - ``gaussian``: vectors from N(0, sigma^2 Sigma_eta), without any
+        per-vector normalization. Sigma_eta has power-law eigenvalues with
+        trace d; eta=0 gives the identity covariance.
 
     ``dictionary_on_the_sphere`` is kept only for backward compatibility with
     older Python calls. When it is not None, it maps True/False to
@@ -89,6 +95,20 @@ def build_dictionary_if_needed(
         on_the_sphere=dictionary_on_the_sphere,
     )
 
+    if dictionary_eta < 0:
+        raise ValueError(
+            f"dictionary_eta must be non-negative, got dictionary_eta={dictionary_eta}."
+        )
+    if dictionary_path is not None and float(dictionary_eta) != 0.0:
+        raise ValueError(
+            "dictionary_eta applies only to generated dictionaries; it cannot "
+            "be combined with dictionary_path."
+        )
+    if resolved_type == "spherical" and float(dictionary_eta) != 0.0:
+        raise ValueError(
+            "A non-zero dictionary_eta requires dictionary_type='gaussian'."
+        )
+
     if dictionary_path is not None:
         # External dictionaries are used exactly as stored: no normalization.
         dictionary = load_dictionary_from_path(dictionary_path)
@@ -98,6 +118,7 @@ def build_dictionary_if_needed(
             d,
             sigma=dictionary_sigma,
             dictionary_type=resolved_type,
+            dictionary_eta=dictionary_eta,
             seed=dictionary_seed,
         )
     else:
@@ -421,6 +442,7 @@ def main(
     save=False,
     l2=None,
     dictionary_type=None,
+    dictionary_eta=0.0,
 ):
     P = int(alpha_P * N)
     if batch_size is None:
@@ -436,6 +458,7 @@ def main(
         dictionary_sigma=dictionary_sigma,
         dictionary_seed=dictionary_seed,
         dictionary_type=dictionary_type,
+        dictionary_eta=dictionary_eta,
     )
     D_dict = None if dictionary is None else dictionary.shape[0]
     resolved_dictionary_type = resolve_dictionary_type(
@@ -449,15 +472,29 @@ def main(
 
     print(
         f"P={P}, P_test={P_test}, lambda={l}, spin_type={spin_type}, "
-        f"label_type={label_type}, D_dict={D_dict}, dictionary_type={dictionary_source}"
+        f"label_type={label_type}, D_dict={D_dict}, dictionary_type={dictionary_source}, "
+        f"dictionary_eta={dictionary_eta if dictionary_source == 'gaussian' else None}"
     )
     if dictionary is not None:
         mean_norm = dictionary.norm(dim=-1).mean().item()
-        mean_coordinate_variance = dictionary.var(dim=0, unbiased=False).mean().item()
+        empirical_coordinate_variance = dictionary.var(dim=0, unbiased=False)
+        mean_coordinate_variance = empirical_coordinate_variance.mean().item()
         print(
             f"dictionary mean_norm={mean_norm:.6g}, "
             f"mean_coordinate_variance={mean_coordinate_variance:.6g}"
         )
+        if dictionary_path is None and dictionary_source == "gaussian":
+            target_eigenvalues = (
+                dictionary_sigma ** 2
+                * power_law_covariance_eigenvalues(
+                    d, eta=dictionary_eta, dtype=dictionary.dtype
+                )
+            )
+            print(
+                f"dictionary covariance_trace={target_eigenvalues.sum().item():.6g}, "
+                f"lambda_max={target_eigenvalues.max().item():.6g}, "
+                f"lambda_min={target_eigenvalues.min().item():.6g}"
+            )
 
     # Keep the historical spherical filename exactly unchanged. Only the new
     # generated Gaussian case receives an explicit suffix.
@@ -467,6 +504,8 @@ def main(
     )
     if dictionary is not None and dictionary_path is None and dictionary_source == "gaussian":
         model_name_base += "_dict_gaussian"
+        if float(dictionary_eta) != 0.0:
+            model_name_base += f"_eta_{dictionary_eta:g}"
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -570,8 +609,8 @@ if __name__ == "__main__":
         choices=["spherical", "gaussian"],
         help=(
             "Distribution used to generate the dictionary. 'spherical' is the "
-            "backward-compatible default; 'gaussian' draws N(0, sigma^2 I_d) "
-            "vectors without normalization."
+            "backward-compatible default; 'gaussian' draws vectors from "
+            "N(0, sigma^2 Sigma_eta) without normalization."
         ),
     )
     parser.add_argument(
@@ -583,7 +622,21 @@ if __name__ == "__main__":
         "--dictionary_sigma",
         type=float,
         default=1.0,
-        help="Gaussian coordinate standard deviation; sigma=1 gives covariance I_d.",
+        help=(
+            "Global scale of Gaussian atoms. Their covariance is "
+            "sigma^2 Sigma_eta; sigma=1 uses trace d."
+        ),
+    )
+    parser.add_argument(
+        "--dictionary_eta",
+        type=float,
+        default=0.0,
+        help=(
+            "Power-law exponent of the Gaussian covariance eigenvalues: "
+            "lambda_m = d m^{-eta} / sum_j j^{-eta}. "
+            "The default eta=0 gives Sigma=I_d. Requires "
+            "--dictionary_type gaussian when non-zero."
+        ),
     )
     parser.add_argument("--dictionary_seed", type=int, default=None)
 
@@ -625,6 +678,7 @@ if __name__ == "__main__":
         dictionary_sigma=args.dictionary_sigma,
         dictionary_seed=args.dictionary_seed,
         dictionary_type=args.dictionary_type,
+        dictionary_eta=args.dictionary_eta,
         seed=args.seed,
         gamma=args.gamma,
         downf=args.downf,
